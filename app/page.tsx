@@ -158,6 +158,17 @@ type AppScreen =
 const teacherSessionKey = "argument-detectives:teacher";
 const studentSessionKey = "argument-detectives:student";
 
+interface StudentSession {
+  code: string;
+  roomId: string;
+  classId: string;
+  studentId: string;
+  studentName: string;
+  teamId: string;
+  avatar: CharacterId;
+  phase: GamePhase;
+}
+
 function phaseToStudentScreen(phase: GamePhase): AppScreen {
   return {
     lobby: "student-lobby",
@@ -207,6 +218,7 @@ export default function Home() {
   const [student, setStudent] = useState<Member | null>(null);
   const [appScreen, setAppScreen] = useState<AppScreen>("home");
   const [selectedTeacherTeamId, setSelectedTeacherTeamId] = useState<string | null>(null);
+  const [studentJoinCode, setStudentJoinCode] = useState("");
   const [restoring, setRestoring] = useState(true);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
@@ -252,11 +264,17 @@ export default function Home() {
         const teacherSession = JSON.parse(localStorage.getItem(teacherSessionKey) ?? "null") as
           | { roomId: string }
           | null;
-        const studentSession = JSON.parse(localStorage.getItem(studentSessionKey) ?? "null") as
-          | { roomId: string; teamId: string; studentId: string }
-          | null;
+        const studentSession = JSON.parse(
+          localStorage.getItem(studentSessionKey) ?? "null",
+        ) as StudentSession | null;
 
-        if (studentSession && (!historyScreen || historyScreen.startsWith("student-"))) {
+        if (studentSession?.code) setStudentJoinCode(studentSession.code);
+
+        if (
+          studentSession &&
+          (!historyScreen ||
+            (historyScreen.startsWith("student-") && historyScreen !== "student-join"))
+        ) {
           await ensureAnonymousUser();
           const [roomSnap, teamDocs, memberSnap] = await Promise.all([
             getDoc(refs.class(studentSession.roomId)),
@@ -279,8 +297,20 @@ export default function Home() {
             setTeams(teamDocs.docs.map((item) => ({ id: item.id, ...item.data() }) as Team));
             setStudent(restoredStudent);
             lastRoomPhaseRef.current = restoredRoom.phase;
+            localStorage.setItem(
+              studentSessionKey,
+              JSON.stringify({
+                ...studentSession,
+                code: restoredRoom.code,
+                roomId: restoredRoom.id,
+                classId: restoredRoom.id,
+                studentName: restoredStudent.name,
+                avatar: restoredStudent.characterId,
+                phase: restoredRoom.phase,
+              } satisfies StudentSession),
+            );
             const screen =
-              historyScreen?.startsWith("student-") && historyScreen !== "student-join"
+              historyScreen?.startsWith("student-")
                 ? historyScreen
                 : phaseToStudentScreen(restoredRoom.phase);
             applyScreen(screen);
@@ -377,9 +407,26 @@ export default function Home() {
     }
     if (lastRoomPhaseRef.current !== room.phase) {
       lastRoomPhaseRef.current = room.phase;
+      const savedSession = JSON.parse(
+        localStorage.getItem(studentSessionKey) ?? "null",
+      ) as StudentSession | null;
+      if (savedSession) {
+        localStorage.setItem(
+          studentSessionKey,
+          JSON.stringify({ ...savedSession, phase: room.phase } satisfies StudentSession),
+        );
+      }
       navigate(phaseToStudentScreen(room.phase));
     }
   }, [room?.phase, view, restoring]);
+
+  function openStudentJoin() {
+    const savedSession = JSON.parse(
+      localStorage.getItem(studentSessionKey) ?? "null",
+    ) as StudentSession | null;
+    setStudentJoinCode(savedSession?.code ?? "");
+    navigate("student-join");
+  }
 
   useEffect(() => {
     if (!firebaseEnabled || !room?.id || room.id === "demo") return;
@@ -508,7 +555,7 @@ export default function Home() {
       const firestore = db;
       await ensureAnonymousUser();
       if (await classCodeExists(form.code)) {
-        throw new Error("이미 사용 중인 입장 코드입니다. 다른 코드를 입력해 주세요.");
+        throw new Error("이미 사용 중인 입장 코드입니다. 다른 코드를 입력해주세요.");
       }
       const roomRef = await addDoc(collection(firestore, "classes"), {
         name: form.name,
@@ -565,19 +612,72 @@ export default function Home() {
     setBusy(true);
     setNotice("");
     try {
-      let activeRoom = room;
-      let activeTeams = teams;
-      if (firebaseEnabled && db && (!room || room.id === "demo")) {
+      const normalizedCode = info.code.trim().toUpperCase();
+      if (!normalizedCode) throw new Error("입장 코드를 입력해 주세요.");
+
+      let activeRoom: ClassRoom | null = null;
+      let activeTeams: Team[] = [];
+      if (firebaseEnabled && db) {
         await ensureAnonymousUser();
-        const found = await findClassByCode(info.code);
-        if (!found) throw new Error("입장 코드를 찾을 수 없습니다.");
+        const found = await findClassByCode(normalizedCode);
+        if (!found) throw new Error("해당 입장 코드의 수업을 찾을 수 없습니다.");
         activeRoom = found as ClassRoom;
         const teamDocs = await getDocs(refs.teams(activeRoom.id));
         activeTeams = teamDocs.docs.map((item) => ({ id: item.id, ...item.data() }) as Team);
         setRoom(activeRoom);
         setTeams(activeTeams);
+      } else if (room?.code === normalizedCode) {
+        activeRoom = room;
+        activeTeams = teams;
       }
-      if (!activeRoom) throw new Error("먼저 입장 코드를 확인해 주세요.");
+      if (!activeRoom) throw new Error("해당 입장 코드의 수업을 찾을 수 없습니다.");
+
+      const savedSession = JSON.parse(
+        localStorage.getItem(studentSessionKey) ?? "null",
+      ) as StudentSession | null;
+      const reusableSession =
+        savedSession?.code === normalizedCode && savedSession.classId === activeRoom.id
+          ? savedSession
+          : null;
+
+      if (reusableSession && firebaseEnabled && activeRoom.id !== "demo") {
+        const existingMember = await getDoc(
+          refs.member(
+            activeRoom.id,
+            reusableSession.teamId,
+            reusableSession.studentId,
+          ),
+        );
+        if (existingMember.exists()) {
+          const member = {
+            id: existingMember.id,
+            ...existingMember.data(),
+          } as Member;
+          setStudent(member);
+          setMembers((current) => [
+            ...current.filter((item) => item.id !== member.id),
+            member,
+          ]);
+          setStudentJoinCode(normalizedCode);
+          localStorage.setItem(
+            studentSessionKey,
+            JSON.stringify({
+              code: normalizedCode,
+              roomId: activeRoom.id,
+              classId: activeRoom.id,
+              studentId: member.id,
+              studentName: member.name,
+              teamId: member.teamId,
+              avatar: member.characterId,
+              phase: activeRoom.phase,
+            } satisfies StudentSession),
+          );
+          localStorage.removeItem(teacherSessionKey);
+          lastRoomPhaseRef.current = activeRoom.phase;
+          navigate(phaseToStudentScreen(activeRoom.phase));
+          return;
+        }
+      }
 
       let teamId = info.teamId;
       if (teamId === "auto") {
@@ -618,13 +718,19 @@ export default function Home() {
           online: true,
         });
       }
+      setStudentJoinCode(normalizedCode);
       localStorage.setItem(
         studentSessionKey,
         JSON.stringify({
+          code: normalizedCode,
           roomId: activeRoom.id,
+          classId: activeRoom.id,
           teamId,
           studentId: member.id,
-        }),
+          studentName: member.name,
+          avatar: member.characterId,
+          phase: activeRoom.phase,
+        } satisfies StudentSession),
       );
       localStorage.removeItem(teacherSessionKey);
       lastRoomPhaseRef.current = activeRoom.phase;
@@ -694,7 +800,7 @@ export default function Home() {
       {view === "home" && (
         <HomeScreen
           onTeacher={() => navigate("teacher-create")}
-          onStudent={() => navigate("student-join")}
+          onStudent={openStudentJoin}
           onDemo={enterDemo}
         />
       )}
@@ -727,7 +833,7 @@ export default function Home() {
       {view === "student-join" && (
         <StudentJoin
           teams={teams}
-          defaultCode={room?.code ?? ""}
+          defaultCode={studentJoinCode}
           busy={busy}
           onSubmit={joinClass}
           onDemo={() => enterDemo("student")}
@@ -1137,7 +1243,20 @@ function StudentJoin({
   const [characterId, setCharacterId] = useState<CharacterId>("fox");
   const [teamId, setTeamId] = useState("auto");
 
-  useEffect(() => setCode(defaultCode), [defaultCode]);
+  useEffect(() => {
+    const savedSession = JSON.parse(
+      localStorage.getItem(studentSessionKey) ?? "null",
+    ) as StudentSession | null;
+    setCode(defaultCode || savedSession?.code || "");
+    if (
+      savedSession &&
+      (!defaultCode || savedSession.code === defaultCode.trim().toUpperCase())
+    ) {
+      setName(savedSession.studentName);
+      setCharacterId(savedSession.avatar);
+      setTeamId(savedSession.teamId);
+    }
+  }, [defaultCode]);
 
   return (
     <section className="join-shell">
