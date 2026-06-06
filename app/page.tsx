@@ -4,6 +4,7 @@ import {
   addDoc,
   collection,
   doc,
+  getDoc,
   getDocs,
   onSnapshot,
   setDoc,
@@ -143,6 +144,39 @@ const demoTeams: Team[] = parsedDemo.map((item) => {
 });
 
 type View = "home" | "teacher-create" | "teacher" | "student-join" | "student";
+type AppScreen =
+  | "home"
+  | "teacher-create"
+  | "teacher-dashboard"
+  | "teacher-detail"
+  | "student-join"
+  | "student-lobby"
+  | "student-round1"
+  | "student-round2"
+  | "student-result";
+
+const teacherSessionKey = "argument-detectives:teacher";
+const studentSessionKey = "argument-detectives:student";
+
+function phaseToStudentScreen(phase: GamePhase): AppScreen {
+  return {
+    lobby: "student-lobby",
+    round1: "student-round1",
+    round2: "student-round2",
+    finished: "student-result",
+  }[phase] as AppScreen;
+}
+
+function screenToStudentPhase(screen: AppScreen, fallback: GamePhase): GamePhase {
+  const phases: Partial<Record<AppScreen, GamePhase>> = {
+    "student-lobby": "lobby",
+    "student-round1": "round1",
+    "student-round2": "round2",
+    "student-result": "finished",
+  };
+  const phase = phases[screen];
+  return phase ?? fallback;
+}
 
 function SortableCard({ id, index }: { id: string; index: number }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
@@ -171,10 +205,181 @@ export default function Home() {
   const [members, setMembers] = useState<Member[]>([]);
   const [reports, setReports] = useState<Report[]>([]);
   const [student, setStudent] = useState<Member | null>(null);
+  const [appScreen, setAppScreen] = useState<AppScreen>("home");
+  const [selectedTeacherTeamId, setSelectedTeacherTeamId] = useState<string | null>(null);
+  const [restoring, setRestoring] = useState(true);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
+  const lastRoomPhaseRef = useRef<GamePhase | null>(null);
 
   const selectedTeam = teams.find((team) => team.id === student?.teamId) ?? null;
+
+  function applyScreen(screen: AppScreen, teamId?: string | null) {
+    setAppScreen(screen);
+    if (screen === "home") setView("home");
+    if (screen === "teacher-create") setView("teacher-create");
+    if (screen === "teacher-dashboard" || screen === "teacher-detail") {
+      setView("teacher");
+      setSelectedTeacherTeamId(screen === "teacher-detail" ? teamId ?? null : null);
+    }
+    if (screen === "student-join") setView("student-join");
+    if (screen.startsWith("student-") && screen !== "student-join") setView("student");
+  }
+
+  function navigate(screen: AppScreen, options?: { replace?: boolean; teamId?: string | null }) {
+    const state = { argumentDetectives: true, screen, teamId: options?.teamId ?? null };
+    if (options?.replace) window.history.replaceState(state, "", window.location.href);
+    else window.history.pushState(state, "", window.location.href);
+    applyScreen(screen, options?.teamId);
+  }
+
+  useEffect(() => {
+    const restoreSession = async () => {
+      if (!firebaseEnabled || !db) {
+        const screen = (window.history.state?.screen as AppScreen | undefined) ?? "home";
+        applyScreen(screen, window.history.state?.teamId);
+        window.history.replaceState(
+          { argumentDetectives: true, screen, teamId: window.history.state?.teamId ?? null },
+          "",
+          window.location.href,
+        );
+        setRestoring(false);
+        return;
+      }
+
+      try {
+        const historyScreen = window.history.state?.screen as AppScreen | undefined;
+        const teacherSession = JSON.parse(localStorage.getItem(teacherSessionKey) ?? "null") as
+          | { roomId: string }
+          | null;
+        const studentSession = JSON.parse(localStorage.getItem(studentSessionKey) ?? "null") as
+          | { roomId: string; teamId: string; studentId: string }
+          | null;
+
+        if (studentSession && (!historyScreen || historyScreen.startsWith("student-"))) {
+          await ensureAnonymousUser();
+          const [roomSnap, teamDocs, memberSnap] = await Promise.all([
+            getDoc(refs.class(studentSession.roomId)),
+            getDocs(refs.teams(studentSession.roomId)),
+            getDoc(
+              refs.member(
+                studentSession.roomId,
+                studentSession.teamId,
+                studentSession.studentId,
+              ),
+            ),
+          ]);
+          if (roomSnap.exists() && memberSnap.exists()) {
+            const restoredRoom = { id: roomSnap.id, ...roomSnap.data() } as ClassRoom;
+            const restoredStudent = {
+              id: memberSnap.id,
+              ...memberSnap.data(),
+            } as Member;
+            setRoom(restoredRoom);
+            setTeams(teamDocs.docs.map((item) => ({ id: item.id, ...item.data() }) as Team));
+            setStudent(restoredStudent);
+            lastRoomPhaseRef.current = restoredRoom.phase;
+            const screen =
+              historyScreen?.startsWith("student-") && historyScreen !== "student-join"
+                ? historyScreen
+                : phaseToStudentScreen(restoredRoom.phase);
+            applyScreen(screen);
+            window.history.replaceState(
+              { argumentDetectives: true, screen, teamId: null },
+              "",
+              window.location.href,
+            );
+            setRestoring(false);
+            return;
+          }
+          localStorage.removeItem(studentSessionKey);
+        }
+
+        if (teacherSession && (!historyScreen || historyScreen.startsWith("teacher-"))) {
+          await ensureAnonymousUser();
+          const [roomSnap, teamDocs] = await Promise.all([
+            getDoc(refs.class(teacherSession.roomId)),
+            getDocs(refs.teams(teacherSession.roomId)),
+          ]);
+          if (roomSnap.exists()) {
+            setRoom({ id: roomSnap.id, ...roomSnap.data() } as ClassRoom);
+            setTeams(teamDocs.docs.map((item) => ({ id: item.id, ...item.data() }) as Team));
+            const screen =
+              historyScreen === "teacher-detail" ? "teacher-detail" : "teacher-dashboard";
+            applyScreen(screen, window.history.state?.teamId);
+            window.history.replaceState(
+              {
+                argumentDetectives: true,
+                screen,
+                teamId: window.history.state?.teamId ?? null,
+              },
+              "",
+              window.location.href,
+            );
+            setRestoring(false);
+            return;
+          }
+          localStorage.removeItem(teacherSessionKey);
+        }
+
+        const screen = historyScreen ?? "home";
+        applyScreen(screen === "teacher-detail" ? "teacher-create" : screen);
+        window.history.replaceState(
+          { argumentDetectives: true, screen, teamId: null },
+          "",
+          window.location.href,
+        );
+      } catch {
+        applyScreen("home");
+        window.history.replaceState(
+          { argumentDetectives: true, screen: "home", teamId: null },
+          "",
+          window.location.href,
+        );
+      } finally {
+        setRestoring(false);
+      }
+    };
+
+    void restoreSession();
+  }, []);
+
+  useEffect(() => {
+    const handlePopState = (event: PopStateEvent) => {
+      const screen = event.state?.screen as AppScreen | undefined;
+      if (screen) {
+        applyScreen(screen, event.state?.teamId);
+        return;
+      }
+
+      const fallback =
+        view === "student"
+          ? "student-join"
+          : view === "teacher"
+            ? "teacher-create"
+            : "home";
+      window.history.pushState(
+        { argumentDetectives: true, screen: fallback, teamId: null },
+        "",
+        window.location.href,
+      );
+      applyScreen(fallback);
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, [view]);
+
+  useEffect(() => {
+    if (!room || view !== "student" || restoring) return;
+    if (lastRoomPhaseRef.current === null) {
+      lastRoomPhaseRef.current = room.phase;
+      return;
+    }
+    if (lastRoomPhaseRef.current !== room.phase) {
+      lastRoomPhaseRef.current = room.phase;
+      navigate(phaseToStudentScreen(room.phase));
+    }
+  }, [room?.phase, view, restoring]);
 
   useEffect(() => {
     if (!firebaseEnabled || !room?.id || room.id === "demo") return;
@@ -236,7 +441,7 @@ export default function Home() {
   function enterDemo(target: "teacher" | "student") {
     setRoom(demoClass);
     setTeams(demoTeams);
-    setView(target === "teacher" ? "teacher" : "student-join");
+    navigate(target === "teacher" ? "teacher-dashboard" : "student-join");
     setNotice("Firebase 환경변수가 없어 데모 모드로 실행 중입니다.");
   }
 
@@ -295,7 +500,7 @@ export default function Home() {
           createdAt: Date.now(),
         });
         setTeams(localTeams);
-        setView("teacher");
+        navigate("teacher-dashboard");
         setNotice("데모 모드로 수업을 만들었습니다. Firebase 설정 후에는 모든 기기에서 동기화됩니다.");
         return;
       }
@@ -341,7 +546,9 @@ export default function Home() {
         startedAt: null,
         createdAt: Date.now(),
       });
-      setView("teacher");
+      localStorage.setItem(teacherSessionKey, JSON.stringify({ roomId: roomRef.id }));
+      localStorage.removeItem(studentSessionKey);
+      navigate("teacher-dashboard");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "수업 생성에 실패했습니다.");
     } finally {
@@ -411,7 +618,17 @@ export default function Home() {
           online: true,
         });
       }
-      setView("student");
+      localStorage.setItem(
+        studentSessionKey,
+        JSON.stringify({
+          roomId: activeRoom.id,
+          teamId,
+          studentId: member.id,
+        }),
+      );
+      localStorage.removeItem(teacherSessionKey);
+      lastRoomPhaseRef.current = activeRoom.phase;
+      navigate(phaseToStudentScreen(activeRoom.phase));
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "입장에 실패했습니다.");
     } finally {
@@ -442,10 +659,21 @@ export default function Home() {
     setRoom({ ...room, phase: "finished" });
   }
 
+  if (restoring) {
+    return (
+      <main>
+        <section className="waiting-room">
+          <span className="eyebrow">논증 탐정단</span>
+          <h1>수사 기록을 불러오는 중...</h1>
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main>
       <header className="topbar">
-        <button className="brand" onClick={() => setView("home")}>
+        <button className="brand" onClick={() => navigate("home")}>
           <span className="brand-mark">?</span>
           <span>논증 탐정단</span>
         </button>
@@ -465,18 +693,30 @@ export default function Home() {
 
       {view === "home" && (
         <HomeScreen
-          onTeacher={() => setView("teacher-create")}
-          onStudent={() => setView("student-join")}
+          onTeacher={() => navigate("teacher-create")}
+          onStudent={() => navigate("student-join")}
           onDemo={enterDemo}
         />
       )}
-      {view === "teacher-create" && <TeacherCreate onSubmit={createClass} busy={busy} />}
+      {view === "teacher-create" && (
+        <TeacherCreate
+          onSubmit={createClass}
+          busy={busy}
+          onBack={() => window.history.back()}
+        />
+      )}
       {view === "teacher" && room && (
         <TeacherDashboard
           room={room}
           teams={teams}
           members={members}
           reports={reports}
+          selectedTeamId={selectedTeacherTeamId}
+          onSelectTeam={(teamId) => {
+            if (teamId) navigate("teacher-detail", { teamId });
+            else window.history.back();
+          }}
+          onBack={() => window.history.back()}
           onPhase={async (phase) =>
             patchRoom({ phase, ...(phase === "round1" ? { startedAt: Date.now() } : {}) })
           }
@@ -499,6 +739,8 @@ export default function Home() {
           team={selectedTeam}
           student={student}
           teamMemberCount={members.filter((member) => member.teamId === selectedTeam.id).length}
+          displayPhase={screenToStudentPhase(appScreen, room.phase)}
+          onBack={() => window.history.back()}
           reports={reports}
           onTeamPatch={(patch) => patchTeam(selectedTeam.id, patch)}
           onReport={async (report) => {
@@ -570,6 +812,7 @@ function HomeScreen({
 function TeacherCreate({
   onSubmit,
   busy,
+  onBack,
 }: {
   onSubmit: (form: {
     name: string;
@@ -579,15 +822,19 @@ function TeacherCreate({
     teamText: string;
   }) => void;
   busy: boolean;
+  onBack: () => void;
 }) {
-  const [name, setName] = useState("2학년 3반 국어");
-  const [code, setCode] = useState("LOGIC6");
+  const [name, setName] = useState("3학년 5반 국어");
+  const [code, setCode] = useState("HDM");
   const [duration, setDuration] = useState(20);
   const [teamCount, setTeamCount] = useState(6);
   const [teamText, setTeamText] = useState(sampleInput);
 
   return (
     <section className="page-shell">
+      <button className="back-button" onClick={onBack}>
+        ← 이전 화면
+      </button>
       <div className="section-heading">
         <span className="step">교사 준비실</span>
         <h1>새 사건 수업 만들기</h1>
@@ -665,6 +912,9 @@ function TeacherDashboard({
   teams,
   members,
   reports,
+  selectedTeamId,
+  onSelectTeam,
+  onBack,
   onPhase,
   onHint,
   onFinish,
@@ -673,12 +923,14 @@ function TeacherDashboard({
   teams: Team[];
   members: Member[];
   reports: Report[];
+  selectedTeamId: string | null;
+  onSelectTeam: (teamId: string | null) => void;
+  onBack: () => void;
   onPhase: (phase: GamePhase) => void;
   onHint: (teamId: string, hint: string) => void;
   onFinish: () => void;
 }) {
   const [hintTexts, setHintTexts] = useState<Record<string, string>>({});
-  const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
 
   function getTeamStage(team: Team) {
     if (room.phase === "finished") return "완료";
@@ -689,6 +941,9 @@ function TeacherDashboard({
 
   return (
     <section className="page-shell">
+      <button className="back-button" onClick={onBack}>
+        ← 이전 화면
+      </button>
       <div className="dashboard-head">
         <div>
           <span className="eyebrow">교사 관제실</span>
@@ -755,7 +1010,7 @@ function TeacherDashboard({
               >
                 <button
                   className="team-card-summary"
-                  onClick={() => setSelectedTeamId(isExpanded ? null : team.id)}
+                  onClick={() => onSelectTeam(isExpanded ? null : team.id)}
                   aria-expanded={isExpanded}
                 >
                   <div className="team-title">
@@ -969,6 +1224,8 @@ function StudentGame({
   team,
   student,
   teamMemberCount,
+  displayPhase,
+  onBack,
   reports,
   onTeamPatch,
   onReport,
@@ -977,6 +1234,8 @@ function StudentGame({
   team: Team;
   student: Member;
   teamMemberCount: number;
+  displayPhase: GamePhase;
+  onBack: () => void;
   reports: Report[];
   onTeamPatch: (patch: Partial<Team>) => void;
   onReport: (report: Report) => void;
@@ -984,9 +1243,33 @@ function StudentGame({
   const [reasonChoice, setReasonChoice] = useState<"A" | "B" | "C">("A");
   const [explanation, setExplanation] = useState("");
   const audioContextRef = useRef<AudioContext | null>(null);
+  const draftReadyRef = useRef(false);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
   const character = characters.find((item) => item.id === student.characterId);
   const myReport = reports.find((report) => report.studentId === student.id);
+  const draftKey = `argument-detectives:report-draft:${room.id}:${student.id}`;
+
+  useEffect(() => {
+    const savedDraft = JSON.parse(localStorage.getItem(draftKey) ?? "null") as
+      | { reasonChoice: "A" | "B" | "C"; explanation: string }
+      | null;
+    if (myReport) {
+      setReasonChoice(myReport.reasonChoice);
+      setExplanation(myReport.explanation);
+    } else if (savedDraft) {
+      setReasonChoice(savedDraft.reasonChoice);
+      setExplanation(savedDraft.explanation);
+    }
+  }, [draftKey, myReport?.submittedAt]);
+
+  useEffect(() => {
+    if (!draftReadyRef.current) {
+      draftReadyRef.current = true;
+      return;
+    }
+    if (myReport) return;
+    localStorage.setItem(draftKey, JSON.stringify({ reasonChoice, explanation }));
+  }, [draftKey, reasonChoice, explanation, myReport]);
 
   function unlockAudio() {
     if (typeof window === "undefined") return;
@@ -1023,9 +1306,12 @@ function StudentGame({
     playMoveSound();
   }
 
-  if (room.phase === "lobby") {
+  if (displayPhase === "lobby") {
     return (
       <section className="waiting-room">
+        <button className="back-button student-back-button" onClick={onBack}>
+          ← 이전 단계
+        </button>
         <span className="character-hero">{character?.emoji}</span>
         <span className="eyebrow">{team.name} · {student.name} 탐정</span>
         <h1>사건 파일이 열리기를 기다리는 중...</h1>
@@ -1035,9 +1321,12 @@ function StudentGame({
     );
   }
 
-  if (room.phase === "finished") {
+  if (displayPhase === "finished") {
     return (
       <section className="result-shell">
+        <button className="back-button student-back-button" onClick={onBack}>
+          ← 이전 단계
+        </button>
         <span className="eyebrow">수사 결과 보고서</span>
         <div className="result-score">
           <span>{character?.emoji}</span>
@@ -1063,9 +1352,12 @@ function StudentGame({
     );
   }
 
-  if (room.phase === "round2") {
+  if (displayPhase === "round2") {
     return (
       <section className="round-shell">
+        <button className="back-button" onClick={onBack}>
+          ← 이전 단계
+        </button>
         <RoundHeader round="ROUND 2" title="왜 그렇게 판단했나요?" team={team} student={student} />
         <div className="round2-layout">
           <aside className="panel completed-text">
@@ -1130,6 +1422,9 @@ function StudentGame({
 
   return (
     <section className="round-shell">
+      <button className="back-button" onClick={onBack}>
+        ← 이전 단계
+      </button>
       <RoundHeader round="ROUND 1" title="사건의 문장을 복원하라" team={team} student={student} />
       <div className="game-layout">
         <div className="card-stage">
