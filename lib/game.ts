@@ -79,12 +79,26 @@ export function calculateScore(
   return Math.max(0, Math.round(score));
 }
 
-export function getBadges(team: Team, reports: Report[]) {
+export function getBadges(team: Team, reports: Report[], memberCount = reports.length) {
   const badges: string[] = [];
-  if (team.score !== null && team.score >= 80) badges.push("논리 탐정단");
-  if (arraysEqual(team.currentOrder, team.originalSentences)) badges.push("사건 복원 성공");
-  if (!team.hintSent) badges.push("자력 해결");
-  if (reports.length >= 3) badges.push("협동 탐정단");
-  if (team.score !== null && team.score < 60) badges.push("재도전 탐정단");
-  return badges;
+  const strongRound2 =
+    reports.length > 0 &&
+    reports.filter(
+      (report) =>
+        report.reasonChoice === correctReason[team.correctType] &&
+        report.explanation.trim().length >= 20,
+    ).length >= Math.ceil(reports.length * 0.7);
+
+  if ((team.score ?? 0) >= 90 || strongRound2) badges.push("논리 탐정단");
+  if (
+    arraysEqual(team.currentOrder, team.originalSentences) &&
+    team.selectedType === team.correctType
+  ) {
+    badges.push("사건 복원 성공");
+  }
+  if (memberCount > 0 && reports.length >= Math.ceil(memberCount * 0.7)) {
+    badges.push("협동 탐정단");
+  }
+  if (!team.hintSent) badges.push("자력 해결 탐정단");
+  return badges.slice(0, 2);
 }

@@ -6,12 +6,11 @@ import {
   doc,
   getDocs,
   onSnapshot,
-  serverTimestamp,
   setDoc,
   updateDoc,
   writeBatch,
 } from "firebase/firestore";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   BookOpenCheck,
   ChevronRight,
@@ -20,7 +19,6 @@ import {
   Lightbulb,
   LogIn,
   Play,
-  RotateCcw,
   Send,
   ShieldCheck,
   Sparkles,
@@ -95,6 +93,24 @@ const sampleInput = `[1모둠]
 지구와 화성은 모두 태양 주위를 돈다.
 지구에는 계절 변화가 있다.
 따라서 화성에도 계절 변화가 있을 것이다.
+#유추
+
+[4모둠]
+모든 금속은 열을 받으면 팽창한다.
+철은 금속이다.
+따라서 철은 열을 받으면 팽창한다.
+#연역
+
+[5모둠]
+우리 반 학생 세 명은 아침 독서 후 집중력이 좋아졌다.
+다른 반 학생들도 아침 독서 후 집중력이 좋아졌다.
+따라서 아침 독서는 대체로 집중력 향상에 도움이 된다.
+#귀납
+
+[6모둠]
+스마트폰과 태블릿은 모두 화면을 터치해 조작한다.
+스마트폰은 사용법을 쉽게 익힐 수 있다.
+따라서 태블릿도 사용법을 쉽게 익힐 수 있을 것이다.
 #유추`;
 
 const demoClass: ClassRoom = {
@@ -482,6 +498,7 @@ export default function Home() {
           room={room}
           team={selectedTeam}
           student={student}
+          teamMemberCount={members.filter((member) => member.teamId === selectedTeam.id).length}
           reports={reports}
           onTeamPatch={(patch) => patchTeam(selectedTeam.id, patch)}
           onReport={async (report) => {
@@ -566,7 +583,7 @@ function TeacherCreate({
   const [name, setName] = useState("2학년 3반 국어");
   const [code, setCode] = useState("LOGIC6");
   const [duration, setDuration] = useState(20);
-  const [teamCount, setTeamCount] = useState(3);
+  const [teamCount, setTeamCount] = useState(6);
   const [teamText, setTeamText] = useState(sampleInput);
 
   return (
@@ -661,6 +678,14 @@ function TeacherDashboard({
   onFinish: () => void;
 }) {
   const [hintTexts, setHintTexts] = useState<Record<string, string>>({});
+  const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
+
+  function getTeamStage(team: Team) {
+    if (room.phase === "finished") return "완료";
+    if (room.phase === "lobby") return "입장 대기";
+    if (room.phase === "round1") return team.round1SubmittedAt ? "ROUND 1 완료" : "ROUND 1";
+    return "ROUND 2";
+  }
 
   return (
     <section className="page-shell">
@@ -705,7 +730,7 @@ function TeacherDashboard({
         <Summary icon={<Clock3 />} label="제한 시간" value={`${room.durationMinutes}분`} />
       </div>
 
-      <div className="team-grid">
+      <div className="team-grid team-overview-grid">
         {teams
           .sort((a, b) => a.name.localeCompare(b.name))
           .map((team) => {
@@ -713,92 +738,118 @@ function TeacherDashboard({
             const teamReports = reports.filter((report) =>
               teamMembers.some((member) => member.id === report.studentId),
             );
+            const isExpanded = selectedTeamId === team.id;
+            const currentScore =
+              room.phase === "finished"
+                ? team.score
+                : calculateScore(
+                    team,
+                    teamReports,
+                    room.durationMinutes,
+                    room.startedAt,
+                  );
             return (
-              <article className="team-panel" key={team.id}>
-                <div className="team-title">
-                  <div>
+              <article
+                className={`team-panel team-overview-card ${isExpanded ? "expanded" : ""}`}
+                key={team.id}
+              >
+                <button
+                  className="team-card-summary"
+                  onClick={() => setSelectedTeamId(isExpanded ? null : team.id)}
+                  aria-expanded={isExpanded}
+                >
+                  <div className="team-title">
                     <span className="team-number">{team.name}</span>
-                    <strong>
-                      {team.round1SubmittedAt
-                        ? "1차 수사 완료"
-                        : room.phase === "lobby"
-                          ? "대기 중"
-                          : "수사 중"}
-                    </strong>
+                    <span className={`team-stage stage-${room.phase}`}>{getTeamStage(team)}</span>
                   </div>
-                  {room.phase === "finished" && <b className="score">{team.score}점</b>}
-                </div>
-                <div className="member-row">
-                  {teamMembers.length ? (
-                    teamMembers.map((member) => {
-                      const character = characters.find((item) => item.id === member.characterId);
-                      return (
-                        <span title={member.name} key={member.id}>
-                          {character?.emoji} {member.name}
-                        </span>
-                      );
-                    })
-                  ) : (
-                    <small>아직 입장한 학생이 없습니다.</small>
-                  )}
-                </div>
-                <div className="mini-order">
-                  {team.currentOrder.map((sentence, index) => (
-                    <p
-                      key={`${sentence}-${index}`}
-                      className={
-                        team.round1SubmittedAt && sentence === team.originalSentences[index]
-                          ? "correct"
-                          : ""
-                      }
-                    >
-                      <b>{index + 1}</b> {sentence}
-                    </p>
-                  ))}
-                </div>
-                <div className="team-meta">
-                  <span>선택: <strong>{team.selectedType ?? "미선택"}</strong></span>
-                  <span>설명: <strong>{teamReports.length}명</strong></span>
-                </div>
-                {team.hintRequested && !team.hintSent && (
-                  <div className="hint-box">
-                    <label>
-                      <Lightbulb /> 힌트 요청 도착
-                      <input
-                        placeholder="이 모둠에 보낼 힌트"
-                        value={hintTexts[team.id] ?? ""}
-                        onChange={(e) =>
-                          setHintTexts((current) => ({ ...current, [team.id]: e.target.value }))
-                        }
-                      />
-                    </label>
-                    <button
-                      onClick={() => {
-                        const hint = hintTexts[team.id]?.trim();
-                        if (hint) onHint(team.id, hint);
-                      }}
-                    >
-                      보내기
-                    </button>
+                  <div className="team-progress-grid">
+                    <span><small>입장 인원</small><strong>{teamMembers.length}명</strong></span>
+                    <span><small>힌트</small><strong>{team.hintSent ? "사용" : team.hintRequested ? "요청" : "미사용"}</strong></span>
+                    <span><small>ROUND 1</small><strong>{team.round1SubmittedAt ? "제출" : "미제출"}</strong></span>
+                    <span><small>ROUND 2</small><strong>{teamReports.length}/{teamMembers.length || 0}명</strong></span>
                   </div>
-                )}
-                {team.hintSent && <p className="sent-hint">보낸 힌트: {team.hintSent}</p>}
-                {room.phase === "finished" && (
-                  <>
-                    <div className="badges">
-                      {getBadges(team, teamReports).map((badge) => (
-                        <span key={badge}>🏅 {badge}</span>
+                  <div className="team-card-score">
+                    <span>{room.phase === "finished" ? "최종 점수" : "현재 점수"}</span>
+                    <strong>{currentScore ?? 0}점</strong>
+                  </div>
+                  <span className="detail-toggle">{isExpanded ? "상세 닫기" : "상세 보기"}</span>
+                </button>
+
+                {isExpanded && (
+                  <div className="team-card-detail">
+                    <div className="member-row">
+                      {teamMembers.length ? (
+                        teamMembers.map((member) => {
+                          const character = characters.find((item) => item.id === member.characterId);
+                          return (
+                            <span title={member.name} key={member.id}>
+                              {character?.emoji} {member.name}
+                            </span>
+                          );
+                        })
+                      ) : (
+                        <small>아직 입장한 학생이 없습니다.</small>
+                      )}
+                    </div>
+                    <div className="mini-order">
+                      {team.currentOrder.map((sentence, index) => (
+                        <p
+                          key={`${sentence}-${index}`}
+                          className={
+                            team.round1SubmittedAt && sentence === team.originalSentences[index]
+                              ? "correct"
+                              : ""
+                          }
+                        >
+                          <b>{index + 1}</b> {sentence}
+                        </p>
                       ))}
                     </div>
-                    <div className="report-list">
-                      {teamReports.map((report) => (
-                        <div key={report.studentId}>
-                          <strong>{report.studentName} · {report.reasonChoice}</strong>
-                          <p>{report.explanation}</p>
+                    <div className="team-meta">
+                      <span>논증 선택: <strong>{team.selectedType ?? "미선택"}</strong></span>
+                      <span>개인 설명: <strong>{teamReports.length}명</strong></span>
+                    </div>
+                    {team.hintRequested && !team.hintSent && (
+                      <div className="hint-box">
+                        <label>
+                          <Lightbulb /> 힌트 요청 도착
+                          <input
+                            placeholder="이 모둠에 보낼 힌트"
+                            value={hintTexts[team.id] ?? ""}
+                            onChange={(e) =>
+                              setHintTexts((current) => ({ ...current, [team.id]: e.target.value }))
+                            }
+                          />
+                        </label>
+                        <button
+                          onClick={() => {
+                            const hint = hintTexts[team.id]?.trim();
+                            if (hint) onHint(team.id, hint);
+                          }}
+                        >
+                          보내기
+                        </button>
+                      </div>
+                    )}
+                    {team.hintSent && <p className="sent-hint">보낸 힌트: {team.hintSent}</p>}
+                    {room.phase === "finished" && (
+                      <>
+                        <div className="badges">
+                          {getBadges(team, teamReports, teamMembers.length).map((badge) => (
+                            <span key={badge}>🏅 {badge}</span>
+                          ))}
                         </div>
-                      ))}
-                    </div>
-                  </>
+                        <div className="report-list">
+                          {teamReports.map((report) => (
+                            <div key={report.studentId}>
+                              <strong>{report.studentName} · {report.reasonChoice}</strong>
+                              <p>{report.explanation}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
                 )}
               </article>
             );
@@ -854,7 +905,7 @@ function StudentJoin({
               className="code-input"
               value={code}
               onChange={(e) => setCode(e.target.value.toUpperCase())}
-              placeholder="예: LOGIC6"
+              placeholder="예: HDM3"
               required
             />
           </label>
@@ -917,6 +968,7 @@ function StudentGame({
   room,
   team,
   student,
+  teamMemberCount,
   reports,
   onTeamPatch,
   onReport,
@@ -924,15 +976,43 @@ function StudentGame({
   room: ClassRoom;
   team: Team;
   student: Member;
+  teamMemberCount: number;
   reports: Report[];
   onTeamPatch: (patch: Partial<Team>) => void;
   onReport: (report: Report) => void;
 }) {
   const [reasonChoice, setReasonChoice] = useState<"A" | "B" | "C">("A");
   const [explanation, setExplanation] = useState("");
+  const audioContextRef = useRef<AudioContext | null>(null);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
   const character = characters.find((item) => item.id === student.characterId);
   const myReport = reports.find((report) => report.studentId === student.id);
+
+  function unlockAudio() {
+    if (typeof window === "undefined") return;
+    const AudioContextClass = window.AudioContext;
+    if (!audioContextRef.current) audioContextRef.current = new AudioContextClass();
+    if (audioContextRef.current.state === "suspended") void audioContextRef.current.resume();
+  }
+
+  function playMoveSound() {
+    unlockAudio();
+    const context = audioContextRef.current;
+    if (!context || context.state !== "running") return;
+
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    const now = context.currentTime;
+    oscillator.type = "square";
+    oscillator.frequency.setValueAtTime(520, now);
+    oscillator.frequency.exponentialRampToValueAtTime(360, now + 0.045);
+    gain.gain.setValueAtTime(0.035, now);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.055);
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+    oscillator.start(now);
+    oscillator.stop(now + 0.06);
+  }
 
   function dragEnd(event: DragEndEvent) {
     const { active, over } = event;
@@ -940,6 +1020,7 @@ function StudentGame({
     const oldIndex = team.currentOrder.indexOf(String(active.id));
     const newIndex = team.currentOrder.indexOf(String(over.id));
     onTeamPatch({ currentOrder: arrayMove(team.currentOrder, oldIndex, newIndex) });
+    playMoveSound();
   }
 
   if (room.phase === "lobby") {
@@ -965,7 +1046,11 @@ function StudentGame({
         </div>
         <h1>{team.name}, 사건 수고했어요!</h1>
         <div className="badges result-badges">
-          {getBadges(team, reports.filter((report) => report.studentId === student.id)).map(
+          {getBadges(
+            team,
+            reports.filter((report) => report.teamId === team.id),
+            teamMemberCount,
+          ).map(
             (badge) => <span key={badge}>🏅 {badge}</span>,
           )}
         </div>
@@ -980,52 +1065,64 @@ function StudentGame({
 
   if (room.phase === "round2") {
     return (
-      <section className="round-shell narrow">
+      <section className="round-shell">
         <RoundHeader round="ROUND 2" title="왜 그렇게 판단했나요?" team={team} student={student} />
-        <div className="panel report-form">
-          <p className="instruction">먼저 가장 알맞은 이유를 하나 선택하세요.</p>
-          <div className="reason-options">
-            {(Object.entries(reasonOptions) as Array<["A" | "B" | "C", string]>).map(
-              ([key, text]) => (
-                <label className={reasonChoice === key ? "selected" : ""} key={key}>
-                  <input
-                    type="radio"
-                    checked={reasonChoice === key}
-                    onChange={() => setReasonChoice(key)}
-                  />
-                  <b>{key}</b>
-                  <span>{text}</span>
-                </label>
-              ),
-            )}
+        <div className="round2-layout">
+          <aside className="panel completed-text">
+            <span className="step">모둠 공동 기록</span>
+            <h2>완성한 글</h2>
+            <p className="completed-text-help">ROUND 1에서 마지막으로 배열한 순서입니다.</p>
+            <ol>
+              {team.currentOrder.map((sentence) => (
+                <li key={sentence}>{sentence}</li>
+              ))}
+            </ol>
+          </aside>
+          <div className="panel report-form">
+            <p className="instruction">먼저 가장 알맞은 이유를 하나 선택하세요.</p>
+            <div className="reason-options">
+              {(Object.entries(reasonOptions) as Array<["A" | "B" | "C", string]>).map(
+                ([key, text]) => (
+                  <label className={reasonChoice === key ? "selected" : ""} key={key}>
+                    <input
+                      type="radio"
+                      checked={reasonChoice === key}
+                      onChange={() => setReasonChoice(key)}
+                    />
+                    <b>{key}</b>
+                    <span>{text}</span>
+                  </label>
+                ),
+              )}
+            </div>
+            <label className="explanation-field">
+              나의 짧은 설명
+              <textarea
+                value={explanation}
+                onChange={(e) => setExplanation(e.target.value)}
+                placeholder="문장 속 어떤 단서를 보고 판단했는지 1~2문장으로 써 보세요."
+                maxLength={200}
+              />
+              <small>{explanation.length}/200자 · 10자 이상 쓰면 설명 점수를 받을 수 있어요.</small>
+            </label>
+            <button
+              className="primary full large"
+              disabled={explanation.trim().length < 10}
+              onClick={() =>
+                onReport({
+                  studentId: student.id,
+                  studentName: student.name,
+                  teamId: team.id,
+                  reasonChoice,
+                  explanation: explanation.trim(),
+                  submittedAt: Date.now(),
+                })
+              }
+            >
+              <Send /> {myReport ? "설명 다시 제출하기" : "개인 수사 보고서 제출"}
+            </button>
+            {myReport && <p className="success-message">✓ 보고서가 저장되었습니다. 친구들이 마칠 때까지 기다려 주세요.</p>}
           </div>
-          <label className="explanation-field">
-            나의 짧은 설명
-            <textarea
-              value={explanation}
-              onChange={(e) => setExplanation(e.target.value)}
-              placeholder="문장 속 어떤 단서를 보고 판단했는지 1~2문장으로 써 보세요."
-              maxLength={200}
-            />
-            <small>{explanation.length}/200자 · 10자 이상 쓰면 설명 점수를 받을 수 있어요.</small>
-          </label>
-          <button
-            className="primary full large"
-            disabled={explanation.trim().length < 10}
-            onClick={() =>
-              onReport({
-                studentId: student.id,
-                studentName: student.name,
-                teamId: team.id,
-                reasonChoice,
-                explanation: explanation.trim(),
-                submittedAt: Date.now(),
-              })
-            }
-          >
-            <Send /> {myReport ? "설명 다시 제출하기" : "개인 수사 보고서 제출"}
-          </button>
-          {myReport && <p className="success-message">✓ 보고서가 저장되었습니다. 친구들이 마칠 때까지 기다려 주세요.</p>}
         </div>
       </section>
     );
@@ -1040,7 +1137,7 @@ function StudentGame({
             <p><strong>문장을 드래그</strong>해서 올바른 순서로 배열하세요.</p>
             <span><Users size={18} /> 모둠원과 실시간 공유 중</span>
           </div>
-          <DndContext sensors={sensors} onDragEnd={dragEnd}>
+          <DndContext sensors={sensors} onDragStart={unlockAudio} onDragEnd={dragEnd}>
             <SortableContext items={team.currentOrder} strategy={verticalListSortingStrategy}>
               <div className="sentence-list">
                 {team.currentOrder.map((sentence, index) => (
