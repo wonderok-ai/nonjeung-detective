@@ -25,6 +25,7 @@ export interface ClassRoom {
   phase: GamePhase;
   startedAt: number | null;
   createdAt: number;
+  teacherId?: string;
 }
 
 export interface Team {

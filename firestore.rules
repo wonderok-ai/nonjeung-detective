@@ -7,23 +7,28 @@ service cloud.firestore {
     }
 
     match /classes/{classId} {
+      function teacherOwnsClass() {
+        return signedIn() &&
+          get(/databases/$(database)/documents/classes/$(classId)).data.teacherId == request.auth.uid;
+      }
+
       allow read, create, update: if signedIn();
-      allow delete: if false;
+      allow delete: if signedIn() && resource.data.teacherId == request.auth.uid;
 
       match /teams/{teamId} {
         allow read, create, update: if signedIn();
-        allow delete: if false;
+        allow delete: if teacherOwnsClass();
 
         match /members/{studentId} {
           allow read: if signedIn();
           allow create, update: if signedIn() && request.auth.uid == studentId;
-          allow delete: if false;
+          allow delete: if teacherOwnsClass();
         }
 
         match /reports/{studentId} {
           allow read: if signedIn();
           allow create, update: if signedIn() && request.auth.uid == studentId;
-          allow delete: if false;
+          allow delete: if teacherOwnsClass();
         }
       }
     }

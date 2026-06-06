@@ -101,6 +101,20 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .primary { color: #182034; background: var(--gold); box-shadow: 0 8px 24px rgba(244,201,93,.18); }
 .secondary { color: var(--ink); background: #26344e; border: 1px solid var(--line); }
 .danger { color: white; background: var(--red); }
+.teacher-danger-zone {
+  margin: 20px 0;
+  padding: 18px;
+  border: 1px solid rgba(239, 68, 68, .45);
+  border-radius: 16px;
+  background: rgba(127, 29, 29, .2);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+.teacher-danger-zone div { display: grid; gap: 5px; }
+.teacher-danger-zone strong { color: #fecaca; }
+.teacher-danger-zone span { color: var(--muted); font-size: 14px; line-height: 1.5; }
 .large { min-height: 58px; padding: 0 27px; font-size: 17px; }
 .full { width: 100%; }
 .demo-actions { margin-top: 28px; display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 14px; }

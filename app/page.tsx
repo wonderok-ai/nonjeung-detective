@@ -3,6 +3,7 @@
 import {
   addDoc,
   collection,
+  deleteDoc,
   doc,
   getDoc,
   getDocs,
@@ -41,7 +42,6 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import {
-  classCodeExists,
   db,
   ensureAnonymousUser,
   findClassByCode,
@@ -219,6 +219,7 @@ export default function Home() {
   const [appScreen, setAppScreen] = useState<AppScreen>("home");
   const [selectedTeacherTeamId, setSelectedTeacherTeamId] = useState<string | null>(null);
   const [studentJoinCode, setStudentJoinCode] = useState("");
+  const [teacherCreateCode, setTeacherCreateCode] = useState("HDM");
   const [restoring, setRestoring] = useState(true);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
@@ -515,11 +516,12 @@ export default function Home() {
     setBusy(true);
     setNotice("");
     try {
-      const parsed = parseTeamText(form.teamText);
-      if (parsed.length !== form.teamCount) {
-        throw new Error(`모둠 수는 ${form.teamCount}개인데 입력된 글은 ${parsed.length}개입니다.`);
-      }
+      const normalizedCode = form.code.trim().toUpperCase();
       if (!firebaseEnabled || !db) {
+        const parsed = parseTeamText(form.teamText);
+        if (parsed.length !== form.teamCount) {
+          throw new Error(`모둠 수는 ${form.teamCount}개인데 입력된 글은 ${parsed.length}개입니다.`);
+        }
         const localTeams = parsed.map((item) => {
           const shuffled = shuffle(item.sentences);
           return {
@@ -553,18 +555,37 @@ export default function Home() {
       }
 
       const firestore = db;
-      await ensureAnonymousUser();
-      if (await classCodeExists(form.code)) {
-        throw new Error("이미 사용 중인 입장 코드입니다. 다른 코드를 입력해주세요.");
+      const teacherUser = await ensureAnonymousUser();
+      if (!teacherUser) throw new Error("교사 인증을 시작하지 못했습니다. 잠시 후 다시 시도해주세요.");
+      const existingClass = await findClassByCode(normalizedCode);
+      if (existingClass) {
+        const existingRoom = existingClass as ClassRoom;
+        if (existingRoom.teacherId !== teacherUser.uid) {
+          await updateDoc(refs.class(existingRoom.id), { teacherId: teacherUser.uid });
+          existingRoom.teacherId = teacherUser.uid;
+        }
+        const teamDocs = await getDocs(refs.teams(existingRoom.id));
+        setRoom(existingRoom);
+        setTeams(teamDocs.docs.map((item) => ({ id: item.id, ...item.data() }) as Team));
+        localStorage.setItem(teacherSessionKey, JSON.stringify({ roomId: existingRoom.id }));
+        localStorage.removeItem(studentSessionKey);
+        navigate("teacher-dashboard");
+        setNotice("이미 저장된 같은 입장 코드의 수업을 불러왔습니다.");
+        return;
+      }
+      const parsed = parseTeamText(form.teamText);
+      if (parsed.length !== form.teamCount) {
+        throw new Error(`모둠 수는 ${form.teamCount}개인데 입력된 글은 ${parsed.length}개입니다.`);
       }
       const roomRef = await addDoc(collection(firestore, "classes"), {
         name: form.name,
-        code: form.code.toUpperCase(),
+        code: normalizedCode,
         durationMinutes: form.duration,
         teamCount: form.teamCount,
         phase: "lobby",
         startedAt: null,
         createdAt: Date.now(),
+        teacherId: teacherUser.uid,
       });
       const batch = writeBatch(firestore);
       parsed.forEach((item) => {
@@ -586,18 +607,61 @@ export default function Home() {
       setRoom({
         id: roomRef.id,
         name: form.name,
-        code: form.code.toUpperCase(),
+        code: normalizedCode,
         durationMinutes: form.duration,
         teamCount: form.teamCount,
         phase: "lobby",
         startedAt: null,
         createdAt: Date.now(),
+        teacherId: teacherUser.uid,
       });
       localStorage.setItem(teacherSessionKey, JSON.stringify({ roomId: roomRef.id }));
       localStorage.removeItem(studentSessionKey);
       navigate("teacher-dashboard");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "수업 생성에 실패했습니다.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function resetCurrentClass() {
+    if (!room || room.id === "demo" || !db) return;
+    const confirmed = window.confirm(
+      "이 입장 코드에 저장된 기존 수업 진행 상황과 결과가 삭제됩니다. 계속할까요?",
+    );
+    if (!confirmed) return;
+
+    setBusy(true);
+    setNotice("");
+    try {
+      const targetRoomId = room.id;
+      const targetCode = room.code;
+      const teamDocs = await getDocs(refs.teams(targetRoomId));
+      for (const teamDoc of teamDocs.docs) {
+        const [memberDocs, reportDocs] = await Promise.all([
+          getDocs(refs.members(targetRoomId, teamDoc.id)),
+          getDocs(refs.reports(targetRoomId, teamDoc.id)),
+        ]);
+        await Promise.all([
+          ...memberDocs.docs.map((memberDoc) => deleteDoc(memberDoc.ref)),
+          ...reportDocs.docs.map((reportDoc) => deleteDoc(reportDoc.ref)),
+        ]);
+        await deleteDoc(teamDoc.ref);
+      }
+      await deleteDoc(refs.class(targetRoomId));
+
+      setRoom(null);
+      setTeams([]);
+      setMembers([]);
+      setReports([]);
+      setSelectedTeacherTeamId(null);
+      setTeacherCreateCode(targetCode);
+      localStorage.removeItem(teacherSessionKey);
+      navigate("teacher-create");
+      setNotice(`${targetCode} 코드의 기존 수업을 초기화했습니다. 새 수업 내용을 저장해 주세요.`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "기존 수업 초기화에 실패했습니다.");
     } finally {
       setBusy(false);
     }
@@ -697,6 +761,9 @@ export default function Home() {
         )[0]?.id;
       }
       if (!teamId) throw new Error("입장할 모둠을 선택해 주세요.");
+      if (!activeTeams.some((team) => team.id === teamId)) {
+        throw new Error("이 수업에는 선택한 모둠이 없습니다. 자동 배정을 선택해주세요.");
+      }
 
       const user = firebaseEnabled ? await ensureAnonymousUser() : null;
       const member: Member = {
@@ -808,6 +875,7 @@ export default function Home() {
         <TeacherCreate
           onSubmit={createClass}
           busy={busy}
+          defaultCode={teacherCreateCode}
           onBack={() => window.history.back()}
         />
       )}
@@ -823,6 +891,8 @@ export default function Home() {
             else window.history.back();
           }}
           onBack={() => window.history.back()}
+          onReset={resetCurrentClass}
+          busy={busy}
           onPhase={async (phase) =>
             patchRoom({ phase, ...(phase === "round1" ? { startedAt: Date.now() } : {}) })
           }
@@ -918,6 +988,7 @@ function HomeScreen({
 function TeacherCreate({
   onSubmit,
   busy,
+  defaultCode,
   onBack,
 }: {
   onSubmit: (form: {
@@ -928,13 +999,16 @@ function TeacherCreate({
     teamText: string;
   }) => void;
   busy: boolean;
+  defaultCode: string;
   onBack: () => void;
 }) {
   const [name, setName] = useState("3학년 5반 국어");
-  const [code, setCode] = useState("HDM");
+  const [code, setCode] = useState(defaultCode);
   const [duration, setDuration] = useState(20);
   const [teamCount, setTeamCount] = useState(6);
   const [teamText, setTeamText] = useState(sampleInput);
+
+  useEffect(() => setCode(defaultCode), [defaultCode]);
 
   return (
     <section className="page-shell">
@@ -1021,6 +1095,8 @@ function TeacherDashboard({
   selectedTeamId,
   onSelectTeam,
   onBack,
+  onReset,
+  busy,
   onPhase,
   onHint,
   onFinish,
@@ -1032,6 +1108,8 @@ function TeacherDashboard({
   selectedTeamId: string | null;
   onSelectTeam: (teamId: string | null) => void;
   onBack: () => void;
+  onReset: () => void;
+  busy: boolean;
   onPhase: (phase: GamePhase) => void;
   onHint: (teamId: string, hint: string) => void;
   onFinish: () => void;
@@ -1089,6 +1167,16 @@ function TeacherDashboard({
           value={`${reports.length}/${members.length || 0}`}
         />
         <Summary icon={<Clock3 />} label="제한 시간" value={`${room.durationMinutes}분`} />
+      </div>
+
+      <div className="teacher-danger-zone">
+        <div>
+          <strong>이 코드로 새 수업을 시작해야 하나요?</strong>
+          <span>현재 수업의 진행 상황과 결과만 삭제하고 같은 코드를 다시 사용할 수 있습니다.</span>
+        </div>
+        <button className="danger" onClick={onReset} disabled={busy}>
+          이 코드의 기존 수업 초기화
+        </button>
       </div>
 
       <div className="team-grid team-overview-grid">
@@ -1296,11 +1384,15 @@ function StudentJoin({
             모둠 선택
             <select value={teamId} onChange={(e) => setTeamId(e.target.value)}>
               <option value="auto">자동 배정</option>
-              {teams.map((team) => (
-                <option value={team.id} key={team.id}>
-                  {team.name}
-                </option>
-              ))}
+              {Array.from({ length: 6 }, (_, index) => {
+                const id = `team-${index + 1}`;
+                const team = teams.find((item) => item.id === id);
+                return (
+                  <option value={id} key={id}>
+                    {team?.name ?? `${index + 1}모둠`}
+                  </option>
+                );
+              })}
             </select>
           </label>
         </div>
@@ -1402,18 +1494,29 @@ function StudentGame({
     const context = audioContextRef.current;
     if (!context || context.state !== "running") return;
 
-    const oscillator = context.createOscillator();
-    const gain = context.createGain();
     const now = context.currentTime;
-    oscillator.type = "square";
-    oscillator.frequency.setValueAtTime(520, now);
-    oscillator.frequency.exponentialRampToValueAtTime(360, now + 0.045);
-    gain.gain.setValueAtTime(0.035, now);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.055);
-    oscillator.connect(gain);
-    gain.connect(context.destination);
-    oscillator.start(now);
-    oscillator.stop(now + 0.06);
+    const ring = (
+      frequency: number,
+      volume: number,
+      delay: number,
+      duration: number,
+    ) => {
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      const startsAt = now + delay;
+
+      oscillator.type = "sine";
+      oscillator.frequency.setValueAtTime(frequency, startsAt);
+      gain.gain.setValueAtTime(volume, startsAt);
+      gain.gain.exponentialRampToValueAtTime(0.001, startsAt + duration);
+      oscillator.connect(gain);
+      gain.connect(context.destination);
+      oscillator.start(startsAt);
+      oscillator.stop(startsAt + duration);
+    };
+
+    ring(880, 0.028, 0, 0.18);
+    ring(1320, 0.012, 0.012, 0.14);
   }
 
   function dragEnd(event: DragEndEvent) {
