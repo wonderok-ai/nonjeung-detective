@@ -202,6 +202,14 @@ function getWinningTeams(teams: Team[]) {
   return teams.filter((team) => team.score === highestScore);
 }
 
+function getDefaultHint(argumentType: ArgumentType) {
+  return {
+    귀납: "여러 사례를 보고 결론을 내렸나요?",
+    연역: "일반 원리에서 출발했나요?",
+    유추: "비슷한 점을 근거로 판단했나요?",
+  }[argumentType];
+}
+
 function WinnerAnnouncement({
   winners,
   open,
@@ -1250,8 +1258,11 @@ function TeacherDashboard({
         !dismissedHintRequestsRef.current.has(team.id),
     );
     if (pendingTeam) {
+      const defaultHint = getDefaultHint(pendingTeam.correctType);
+      const hintDraft = hintTexts[pendingTeam.id]?.trim() || defaultHint;
       setHintRequestTeamId(pendingTeam.id);
-      setPopupHint(hintTexts[pendingTeam.id] ?? "");
+      setHintTexts((current) => ({ ...current, [pendingTeam.id]: hintDraft }));
+      setPopupHint(hintDraft);
     }
   }, [teams, hintRequestTeamId, hintTexts]);
 
