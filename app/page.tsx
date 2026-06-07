@@ -57,6 +57,7 @@ import {
   getBadges,
   parseTeamText,
   reasonOptions,
+  scoreExplanation,
   shuffle,
 } from "@/lib/game";
 import {
@@ -1270,6 +1271,7 @@ function TeacherDashboard({
             );
             const isRound2Complete =
               teamMembers.length > 0 && teamReports.length >= teamMembers.length;
+            const isRound1Complete = Boolean(team.round1SubmittedAt);
             const isExpanded = selectedTeamId === team.id;
             const currentScore =
               room.phase === "finished"
@@ -1283,7 +1285,11 @@ function TeacherDashboard({
             return (
               <article
                 className={`team-panel team-overview-card ${isExpanded ? "expanded" : ""} ${
-                  isRound2Complete ? "round2-complete" : ""
+                  isRound2Complete
+                    ? "round2-complete"
+                    : isRound1Complete
+                      ? "round1-complete"
+                      : ""
                 }`}
                 key={team.id}
               >
@@ -1295,7 +1301,7 @@ function TeacherDashboard({
                   <div className="team-title">
                     <span className="team-number">{team.name}</span>
                     <span className={`team-stage stage-${room.phase}`}>
-                      {isRound2Complete && <CheckCircle2 size={16} />}
+                      {(isRound1Complete || isRound2Complete) && <CheckCircle2 size={16} />}
                       {getTeamStage(team, isRound2Complete)}
                     </span>
                   </div>
@@ -1304,6 +1310,18 @@ function TeacherDashboard({
                     <span><small>힌트</small><strong>{team.hintSent ? "사용" : team.hintRequested ? "요청" : "미사용"}</strong></span>
                     <span><small>ROUND 1</small><strong>{team.round1SubmittedAt ? "제출" : "미제출"}</strong></span>
                     <span><small>ROUND 2</small><strong>{teamReports.length}/{teamMembers.length || 0}명</strong></span>
+                  </div>
+                  <div className="team-member-names">
+                    <small>학생</small>
+                    <div>
+                      {teamMembers.length ? (
+                        teamMembers.map((member) => (
+                          <span key={member.id}>{member.name}</span>
+                        ))
+                      ) : (
+                        <em>입장 학생 없음</em>
+                      )}
+                    </div>
                   </div>
                   <div className="team-card-score">
                     <span>{room.phase === "finished" ? "최종 점수" : "현재 점수"}</span>
@@ -1370,21 +1388,24 @@ function TeacherDashboard({
                     )}
                     {team.hintSent && <p className="sent-hint">보낸 힌트: {team.hintSent}</p>}
                     {room.phase === "finished" && (
-                      <>
-                        <div className="badges">
-                          {getBadges(team, teamReports, teamMembers.length).map((badge) => (
-                            <span key={badge}>🏅 {badge}</span>
-                          ))}
-                        </div>
-                        <div className="report-list">
-                          {teamReports.map((report) => (
-                            <div key={report.studentId}>
-                              <strong>{report.studentName} · {report.reasonChoice}</strong>
-                              <p>{report.explanation}</p>
-                            </div>
-                          ))}
-                        </div>
-                      </>
+                      <div className="badges">
+                        {getBadges(team, teamReports, teamMembers.length).map((badge) => (
+                          <span key={badge}>🏅 {badge}</span>
+                        ))}
+                      </div>
+                    )}
+                    {teamReports.length > 0 && (
+                      <div className="report-list">
+                        {teamReports.map((report) => (
+                          <div key={report.studentId}>
+                            <strong>
+                              {report.studentName} · {report.reasonChoice}
+                              <b>설명 {scoreExplanation(team, report)}/10점</b>
+                            </strong>
+                            <p>{report.explanation}</p>
+                          </div>
+                        ))}
+                      </div>
                     )}
                   </div>
                 )}
@@ -1602,12 +1623,22 @@ function StudentGame({
 }) {
   const [reasonChoice, setReasonChoice] = useState<"A" | "B" | "C">("A");
   const [explanation, setExplanation] = useState("");
+  const [hintPopupOpen, setHintPopupOpen] = useState(false);
   const audioContextRef = useRef<AudioContext | null>(null);
   const draftReadyRef = useRef(false);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
   const character = characters.find((item) => item.id === student.characterId);
   const myReport = reports.find((report) => report.studentId === student.id);
   const draftKey = `argument-detectives:report-draft:${room.id}:${student.id}`;
+  const seenHintKey = `argument-detectives:seen-hint:${room.id}:${student.id}`;
+
+  useEffect(() => {
+    if (!team.hintSent) {
+      setHintPopupOpen(false);
+      return;
+    }
+    setHintPopupOpen(localStorage.getItem(seenHintKey) !== team.hintSent);
+  }, [seenHintKey, team.hintSent]);
 
   useEffect(() => {
     const savedDraft = JSON.parse(localStorage.getItem(draftKey) ?? "null") as
@@ -1677,6 +1708,29 @@ function StudentGame({
     playMoveSound();
   }
 
+  function closeHintPopup() {
+    if (team.hintSent) localStorage.setItem(seenHintKey, team.hintSent);
+    setHintPopupOpen(false);
+  }
+
+  const hintPopup = hintPopupOpen && team.hintSent && (
+    <div className="completion-modal-backdrop" role="presentation">
+      <section
+        className="completion-modal student-hint-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="student-hint-title"
+      >
+        <Lightbulb size={52} />
+        <h2 id="student-hint-title">💡 선생님의 힌트가 도착했어요!</h2>
+        <p>{team.hintSent}</p>
+        <button className="primary large" onClick={closeHintPopup}>
+          확인
+        </button>
+      </section>
+    </div>
+  );
+
   if (displayPhase === "lobby") {
     return (
       <section className="waiting-room">
@@ -1726,6 +1780,7 @@ function StudentGame({
   if (displayPhase === "round2") {
     return (
       <section className="round-shell">
+        {hintPopup}
         <button className="back-button" onClick={onBack}>
           ← 이전 단계
         </button>
@@ -1740,6 +1795,12 @@ function StudentGame({
                 <li key={sentence}>{sentence}</li>
               ))}
             </ol>
+            {team.hintSent && (
+              <div className="received-hint persistent-hint">
+                <Lightbulb />
+                <span><b>받은 힌트</b>{team.hintSent}</span>
+              </div>
+            )}
           </aside>
           <div className="panel report-form">
             <p className="instruction">먼저 가장 알맞은 이유를 하나 선택하세요.</p>
@@ -1793,6 +1854,7 @@ function StudentGame({
 
   return (
     <section className="round-shell">
+      {hintPopup}
       <button className="back-button" onClick={onBack}>
         ← 이전 단계
       </button>

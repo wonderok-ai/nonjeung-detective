@@ -48,6 +48,71 @@ export function arraysEqual(a: string[], b: string[]) {
   return a.length === b.length && a.every((item, index) => item === b[index]);
 }
 
+const weakExplanationPatterns = [
+  /^(ㅋ+|ㅎ+|ㅇ+|ㄴ+|ㅁ+)$/,
+  /^(몰라요?|모름|그냥|아무거나|좋아요?|네|아니요|ㅇㅇ|ㄴㄴ)[.!?~ ]*$/,
+  /(아무 말|대충|잘 모르겠|모르겠어요)/,
+];
+
+const methodKeywords: Record<ArgumentType, string[]> = {
+  연역: ["연역", "일반 원리", "개별 사례", "전제", "필연", "이끌어"],
+  귀납: ["귀납", "여러 사례", "관찰", "공통", "일반 결론", "일반화"],
+  유추: ["유추", "비슷", "유사", "비교", "공통점", "닮은"],
+};
+
+const commonWords = new Set([
+  "그리고",
+  "그러나",
+  "따라서",
+  "때문",
+  "문장",
+  "사례",
+  "결론",
+  "일반",
+  "개별",
+  "여러",
+  "방법",
+]);
+
+export function scoreExplanation(team: Team, report: Report) {
+  const explanation = report.explanation.trim().replace(/\s+/g, " ");
+  const compact = explanation.replace(/[\s.,!?~"'`()]/g, "");
+  if (compact.length < 5 || weakExplanationPatterns.some((pattern) => pattern.test(explanation))) {
+    return 0;
+  }
+
+  let score = compact.length >= 18 ? 2 : 1;
+  const selectedMethod = team.selectedType ?? team.correctType;
+  const relatedMethodWords = methodKeywords[selectedMethod];
+  const mentionsMethod = relatedMethodWords.some((keyword) => explanation.includes(keyword));
+  const mentionsOtherMethod = (Object.keys(methodKeywords) as ArgumentType[]).some(
+    (method) =>
+      method !== selectedMethod &&
+      methodKeywords[method].some((keyword) => explanation.includes(keyword)),
+  );
+  if (mentionsMethod) score += 3;
+  else if (mentionsOtherMethod) score += 1;
+
+  const contentWords = team.originalSentences
+    .join(" ")
+    .match(/[가-힣A-Za-z0-9]{2,}/g)
+    ?.filter((word) => !commonWords.has(word)) ?? [];
+  const connectsToText =
+    contentWords.some((word) => explanation.includes(word)) ||
+    ["글에서", "문장에서", "첫 문장", "두 번째", "세 번째"].some((phrase) =>
+      explanation.includes(phrase),
+    );
+  if (connectsToText) score += 2;
+
+  const givesReason = ["때문", "이므로", "이어서", "따라서", "그래서", "판단", "결론"].some(
+    (keyword) => explanation.includes(keyword),
+  );
+  if (givesReason) score += 2;
+
+  if (compact.length >= 30 && mentionsMethod && (connectsToText || givesReason)) score += 1;
+  return Math.min(10, score);
+}
+
 export function calculateScore(
   team: Team,
   reports: Report[],
@@ -74,7 +139,7 @@ export function calculateScore(
         0,
       ) / reports.length;
     const explanationPoints =
-      reports.reduce((sum, report) => sum + (report.explanation.trim().length >= 10 ? 10 : 0), 0) /
+      reports.reduce((sum, report) => sum + scoreExplanation(team, report), 0) /
       reports.length;
     score += reasonPoints + explanationPoints;
   }
@@ -90,7 +155,7 @@ export function getBadges(team: Team, reports: Report[], memberCount = reports.l
     reports.filter(
       (report) =>
         report.reasonChoice === correctReason[team.correctType] &&
-        report.explanation.trim().length >= 20,
+        scoreExplanation(team, report) >= 8,
     ).length >= Math.ceil(reports.length * 0.7);
 
   if ((team.score ?? 0) >= 90 || strongRound2) badges.push("논리 탐정단");

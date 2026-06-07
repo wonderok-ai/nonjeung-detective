@@ -191,6 +191,15 @@ code { color: var(--gold); }
 .team-overview-card { padding: 0; overflow: hidden; transition: border-color .18s, transform .18s; }
 .team-overview-card:hover { transform: translateY(-2px); border-color: rgba(244,201,93,.28); }
 .team-overview-card.expanded { grid-column: 1 / -1; transform: none; border-color: rgba(244,201,93,.42); }
+.team-overview-card.round1-complete {
+  border-color: rgba(74, 222, 128, .52);
+  background: linear-gradient(145deg, rgba(22, 101, 52, .15), rgba(22, 32, 52, .96));
+  box-shadow: 0 0 0 1px rgba(74, 222, 128, .08);
+}
+.team-overview-card.round1-complete .team-stage {
+  color: #bbf7d0; background: rgba(22, 101, 52, .38);
+  display: inline-flex; align-items: center; gap: 5px;
+}
 .team-overview-card.round2-complete {
   border-color: rgba(74, 222, 128, .85);
   background: linear-gradient(145deg, rgba(22, 101, 52, .32), rgba(22, 32, 52, .94));
@@ -242,6 +251,14 @@ code { color: var(--gold); }
 }
 .team-progress-grid small { color: var(--muted); font-size: 11px; }
 .team-progress-grid strong { margin-top: 2px; font-size: 15px; }
+.team-member-names { margin-top: 10px; }
+.team-member-names > small { color: var(--muted); font-size: 11px; }
+.team-member-names > div { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
+.team-member-names span {
+  padding: 4px 7px; border-radius: 99px; background: #26354e;
+  color: #dbe6f6; font-size: 11px; line-height: 1.2;
+}
+.team-member-names em { color: var(--muted); font-size: 12px; font-style: normal; }
 .team-card-score {
   display: flex; justify-content: space-between; align-items: center; margin-top: 13px;
   padding-top: 13px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px;
@@ -274,6 +291,10 @@ code { color: var(--gold); }
 .report-list { margin-top: 14px; display: grid; gap: 8px; }
 .report-list div { padding: 10px; background: #10192a; border-radius: 9px; }
 .report-list strong { color: var(--mint); font-size: 13px; }
+.report-list strong b {
+  float: right; padding: 2px 7px; border-radius: 99px;
+  color: #172033; background: var(--gold); font-size: 11px;
+}
 .report-list p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
 
 .join-shell { max-width: 900px; margin: auto; padding: 45px 28px 80px; }
@@ -340,6 +361,11 @@ legend { font-weight: 800; margin-bottom: 14px; }
 .received-hint { display: flex; gap: 10px; background: rgba(244,201,93,.1); color: var(--gold); padding: 12px; border-radius: 11px; margin-bottom: 13px; }
 .received-hint span { display: flex; flex-direction: column; color: var(--ink); font-size: 13px; }
 .received-hint b { color: var(--gold); }
+.persistent-hint { margin: 20px 0 0; }
+.student-hint-modal p {
+  padding: 16px; border-radius: 13px; color: var(--ink);
+  background: rgba(244,201,93,.1); line-height: 1.7;
+}
 .success-message { text-align: center; color: var(--mint) !important; font-weight: 700; font-size: 13px !important; }
 
 .report-form { padding: 30px; }
