@@ -16,7 +16,6 @@ import { useEffect, useRef, useState } from "react";
 import {
   BookOpenCheck,
   CheckCircle2,
-  ChevronLeft,
   ChevronRight,
   Clock3,
   GripVertical,
@@ -901,6 +900,7 @@ export default function Home() {
             else window.history.back();
           }}
           onBack={() => window.history.back()}
+          onForward={() => window.history.forward()}
           onReset={resetCurrentClass}
           busy={busy}
           onPhase={async (phase) =>
@@ -1108,6 +1108,7 @@ function TeacherDashboard({
   selectedTeamId,
   onSelectTeam,
   onBack,
+  onForward,
   onReset,
   busy,
   onPhase,
@@ -1121,6 +1122,7 @@ function TeacherDashboard({
   selectedTeamId: string | null;
   onSelectTeam: (teamId: string | null) => void;
   onBack: () => void;
+  onForward: () => void;
   onReset: () => void;
   busy: boolean;
   onPhase: (phase: GamePhase) => void;
@@ -1128,9 +1130,12 @@ function TeacherDashboard({
   onFinish: () => void;
 }) {
   const [hintTexts, setHintTexts] = useState<Record<string, string>>({});
+  const [hintRequestTeamId, setHintRequestTeamId] = useState<string | null>(null);
+  const [popupHint, setPopupHint] = useState("");
   const [completionAlert, setCompletionAlert] = useState<"round1" | "round2" | null>(null);
   const round1AlertedRef = useRef(false);
   const round2AlertedRef = useRef(false);
+  const dismissedHintRequestsRef = useRef<Set<string>>(new Set());
 
   const allRound1Submitted =
     teams.length > 0 && teams.every((team) => Boolean(team.round1SubmittedAt));
@@ -1165,21 +1170,36 @@ function TeacherDashboard({
     }
   }, [room.phase, allRound1Submitted, allRound2Submitted]);
 
-  const phaseOrder: GamePhase[] = ["lobby", "round1", "round2", "finished"];
-  const currentPhaseIndex = phaseOrder.indexOf(room.phase);
+  useEffect(() => {
+    if (hintRequestTeamId) return;
+    const pendingTeam = teams.find(
+      (team) =>
+        team.hintRequested &&
+        !team.hintSent &&
+        !dismissedHintRequestsRef.current.has(team.id),
+    );
+    if (pendingTeam) {
+      setHintRequestTeamId(pendingTeam.id);
+      setPopupHint(hintTexts[pendingTeam.id] ?? "");
+    }
+  }, [teams, hintRequestTeamId, hintTexts]);
 
-  function moveToPreviousPhase() {
-    if (currentPhaseIndex > 0) onPhase(phaseOrder[currentPhaseIndex - 1]);
+  const hintRequestTeam =
+    teams.find((team) => team.id === hintRequestTeamId) ?? null;
+
+  function closeHintPopup() {
+    if (hintRequestTeamId) dismissedHintRequestsRef.current.add(hintRequestTeamId);
+    setHintRequestTeamId(null);
+    setPopupHint("");
   }
 
-  function moveToNextPhase() {
-    if (room.phase === "round2") {
-      onFinish();
-      return;
-    }
-    if (currentPhaseIndex < phaseOrder.length - 1) {
-      onPhase(phaseOrder[currentPhaseIndex + 1]);
-    }
+  function sendPopupHint() {
+    const hint = popupHint.trim();
+    if (!hintRequestTeam || !hint) return;
+    setHintTexts((current) => ({ ...current, [hintRequestTeam.id]: hint }));
+    onHint(hintRequestTeam.id, hint);
+    setHintRequestTeamId(null);
+    setPopupHint("");
   }
 
   function getTeamStage(team: Team, round2Complete: boolean) {
@@ -1191,9 +1211,14 @@ function TeacherDashboard({
 
   return (
     <section className="page-shell">
-      <button className="back-button" onClick={onBack}>
-        ← 이전 화면
-      </button>
+      <div className="screen-history-controls">
+        <button className="back-button" onClick={onBack}>
+          ← 이전 화면
+        </button>
+        <button className="back-button" onClick={onForward}>
+          다음 화면 →
+        </button>
+      </div>
       <div className="dashboard-head">
         <div>
           <span className="eyebrow">교사 관제실</span>
@@ -1202,21 +1227,21 @@ function TeacherDashboard({
         </div>
         <div className="phase-controls">
           <span className={`status status-${room.phase}`}>{phaseLabel(room.phase)}</span>
-          <button
-            className="secondary phase-move-button"
-            onClick={moveToPreviousPhase}
-            disabled={room.phase === "lobby"}
-          >
-            <ChevronLeft /> 이전 단계
-          </button>
-          <button
-            className={room.phase === "round2" ? "danger phase-move-button" : "primary phase-move-button"}
-            onClick={moveToNextPhase}
-            disabled={room.phase === "finished"}
-          >
-            {room.phase === "round2" ? <Trophy /> : <Play />}
-            다음 단계 <ChevronRight />
-          </button>
+          {room.phase === "lobby" && (
+            <button className="primary" onClick={() => onPhase("round1")}>
+              <Play /> ROUND 1 시작
+            </button>
+          )}
+          {room.phase === "round1" && (
+            <button className="primary" onClick={() => onPhase("round2")}>
+              ROUND 2 열기 <ChevronRight />
+            </button>
+          )}
+          {room.phase === "round2" && (
+            <button className="danger" onClick={onFinish}>
+              <Trophy /> 게임 종료·채점
+            </button>
+          )}
         </div>
       </div>
 
@@ -1233,16 +1258,6 @@ function TeacherDashboard({
           value={`${reports.length}/${members.length || 0}`}
         />
         <Summary icon={<Clock3 />} label="제한 시간" value={`${room.durationMinutes}분`} />
-      </div>
-
-      <div className="teacher-danger-zone">
-        <div>
-          <strong>이 코드로 새 수업을 시작해야 하나요?</strong>
-          <span>현재 수업의 진행 상황과 결과만 삭제하고 같은 코드를 다시 사용할 수 있습니다.</span>
-        </div>
-        <button className="danger" onClick={onReset} disabled={busy}>
-          이 코드의 기존 수업 초기화
-        </button>
       </div>
 
       <div className="team-grid team-overview-grid">
@@ -1377,6 +1392,54 @@ function TeacherDashboard({
             );
           })}
       </div>
+
+      <div className="teacher-danger-zone teacher-danger-zone-bottom">
+        <div>
+          <strong>이 코드로 새 수업을 시작해야 하나요?</strong>
+          <span>현재 수업의 진행 상황과 결과만 삭제하고 같은 코드를 다시 사용할 수 있습니다.</span>
+        </div>
+        <button className="danger" onClick={onReset} disabled={busy}>
+          이 코드의 기존 수업 초기화
+        </button>
+      </div>
+
+      {hintRequestTeam && (
+        <div className="completion-modal-backdrop" role="presentation">
+          <section
+            className="completion-modal hint-request-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="hint-request-modal-title"
+          >
+            <Lightbulb size={48} />
+            <span className="eyebrow">힌트 요청</span>
+            <h2 id="hint-request-modal-title">
+              {hintRequestTeam.name}이 힌트를 요청했습니다.
+            </h2>
+            <label>
+              보낼 힌트
+              <textarea
+                value={popupHint}
+                onChange={(event) => setPopupHint(event.target.value)}
+                placeholder={`${hintRequestTeam.name} 학생들에게 보낼 힌트를 입력하세요.`}
+                autoFocus
+              />
+            </label>
+            <div className="modal-actions">
+              <button className="secondary" onClick={closeHintPopup}>
+                닫기
+              </button>
+              <button
+                className="primary"
+                onClick={sendPopupHint}
+                disabled={!popupHint.trim()}
+              >
+                <Send /> 힌트 보내기
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
 
       {completionAlert && (
         <div className="completion-modal-backdrop" role="presentation">
