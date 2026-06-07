@@ -15,6 +15,8 @@ import {
 import { useEffect, useRef, useState } from "react";
 import {
   BookOpenCheck,
+  CheckCircle2,
+  ChevronLeft,
   ChevronRight,
   Clock3,
   GripVertical,
@@ -185,8 +187,13 @@ function screenToStudentPhase(screen: AppScreen, fallback: GamePhase): GamePhase
     "student-round2": "round2",
     "student-result": "finished",
   };
-  const phase = phases[screen];
-  return phase ?? fallback;
+  const requestedPhase = phases[screen];
+  if (!requestedPhase) return fallback;
+
+  const phaseOrder: GamePhase[] = ["lobby", "round1", "round2", "finished"];
+  return phaseOrder.indexOf(requestedPhase) <= phaseOrder.indexOf(fallback)
+    ? requestedPhase
+    : fallback;
 }
 
 function SortableCard({ id, index }: { id: string; index: number }) {
@@ -897,7 +904,10 @@ export default function Home() {
           onReset={resetCurrentClass}
           busy={busy}
           onPhase={async (phase) =>
-            patchRoom({ phase, ...(phase === "round1" ? { startedAt: Date.now() } : {}) })
+            patchRoom({
+              phase,
+              ...(phase === "round1" && !room.startedAt ? { startedAt: Date.now() } : {}),
+            })
           }
           onHint={(teamId, hint) => patchTeam(teamId, { hintSent: hint })}
           onFinish={finishGame}
@@ -1118,12 +1128,65 @@ function TeacherDashboard({
   onFinish: () => void;
 }) {
   const [hintTexts, setHintTexts] = useState<Record<string, string>>({});
+  const [completionAlert, setCompletionAlert] = useState<"round1" | "round2" | null>(null);
+  const round1AlertedRef = useRef(false);
+  const round2AlertedRef = useRef(false);
 
-  function getTeamStage(team: Team) {
+  const allRound1Submitted =
+    teams.length > 0 && teams.every((team) => Boolean(team.round1SubmittedAt));
+  const allRound2Submitted =
+    teams.length > 0 &&
+    teams.every((team) => {
+      const teamMembers = members.filter((member) => member.teamId === team.id);
+      const submittedIds = new Set(
+        reports
+          .filter((report) => report.teamId === team.id)
+          .map((report) => report.studentId),
+      );
+      return teamMembers.length > 0 && teamMembers.every((member) => submittedIds.has(member.id));
+    });
+
+  useEffect(() => {
+    if (
+      room.phase === "round1" &&
+      allRound1Submitted &&
+      !round1AlertedRef.current
+    ) {
+      round1AlertedRef.current = true;
+      setCompletionAlert("round1");
+    }
+    if (
+      room.phase === "round2" &&
+      allRound2Submitted &&
+      !round2AlertedRef.current
+    ) {
+      round2AlertedRef.current = true;
+      setCompletionAlert("round2");
+    }
+  }, [room.phase, allRound1Submitted, allRound2Submitted]);
+
+  const phaseOrder: GamePhase[] = ["lobby", "round1", "round2", "finished"];
+  const currentPhaseIndex = phaseOrder.indexOf(room.phase);
+
+  function moveToPreviousPhase() {
+    if (currentPhaseIndex > 0) onPhase(phaseOrder[currentPhaseIndex - 1]);
+  }
+
+  function moveToNextPhase() {
+    if (room.phase === "round2") {
+      onFinish();
+      return;
+    }
+    if (currentPhaseIndex < phaseOrder.length - 1) {
+      onPhase(phaseOrder[currentPhaseIndex + 1]);
+    }
+  }
+
+  function getTeamStage(team: Team, round2Complete: boolean) {
     if (room.phase === "finished") return "완료";
     if (room.phase === "lobby") return "입장 대기";
     if (room.phase === "round1") return team.round1SubmittedAt ? "ROUND 1 완료" : "ROUND 1";
-    return "ROUND 2";
+    return round2Complete ? "ROUND 2 완료" : "ROUND 2";
   }
 
   return (
@@ -1139,21 +1202,21 @@ function TeacherDashboard({
         </div>
         <div className="phase-controls">
           <span className={`status status-${room.phase}`}>{phaseLabel(room.phase)}</span>
-          {room.phase === "lobby" && (
-            <button className="primary" onClick={() => onPhase("round1")}>
-              <Play /> ROUND 1 시작
-            </button>
-          )}
-          {room.phase === "round1" && (
-            <button className="primary" onClick={() => onPhase("round2")}>
-              ROUND 2 열기 <ChevronRight />
-            </button>
-          )}
-          {room.phase === "round2" && (
-            <button className="danger" onClick={onFinish}>
-              <Trophy /> 게임 종료·채점
-            </button>
-          )}
+          <button
+            className="secondary phase-move-button"
+            onClick={moveToPreviousPhase}
+            disabled={room.phase === "lobby"}
+          >
+            <ChevronLeft /> 이전 단계
+          </button>
+          <button
+            className={room.phase === "round2" ? "danger phase-move-button" : "primary phase-move-button"}
+            onClick={moveToNextPhase}
+            disabled={room.phase === "finished"}
+          >
+            {room.phase === "round2" ? <Trophy /> : <Play />}
+            다음 단계 <ChevronRight />
+          </button>
         </div>
       </div>
 
@@ -1190,6 +1253,8 @@ function TeacherDashboard({
             const teamReports = reports.filter((report) =>
               teamMembers.some((member) => member.id === report.studentId),
             );
+            const isRound2Complete =
+              teamMembers.length > 0 && teamReports.length >= teamMembers.length;
             const isExpanded = selectedTeamId === team.id;
             const currentScore =
               room.phase === "finished"
@@ -1202,7 +1267,9 @@ function TeacherDashboard({
                   );
             return (
               <article
-                className={`team-panel team-overview-card ${isExpanded ? "expanded" : ""}`}
+                className={`team-panel team-overview-card ${isExpanded ? "expanded" : ""} ${
+                  isRound2Complete ? "round2-complete" : ""
+                }`}
                 key={team.id}
               >
                 <button
@@ -1212,7 +1279,10 @@ function TeacherDashboard({
                 >
                   <div className="team-title">
                     <span className="team-number">{team.name}</span>
-                    <span className={`team-stage stage-${room.phase}`}>{getTeamStage(team)}</span>
+                    <span className={`team-stage stage-${room.phase}`}>
+                      {isRound2Complete && <CheckCircle2 size={16} />}
+                      {getTeamStage(team, isRound2Complete)}
+                    </span>
                   </div>
                   <div className="team-progress-grid">
                     <span><small>입장 인원</small><strong>{teamMembers.length}명</strong></span>
@@ -1307,6 +1377,27 @@ function TeacherDashboard({
             );
           })}
       </div>
+
+      {completionAlert && (
+        <div className="completion-modal-backdrop" role="presentation">
+          <section
+            className="completion-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="completion-modal-title"
+          >
+            <CheckCircle2 size={54} />
+            <span className="eyebrow">
+              {completionAlert === "round1" ? "ROUND 1" : "ROUND 2"}
+            </span>
+            <h2 id="completion-modal-title">🎉 모든 모둠 제출 완료!</h2>
+            <p>다음 단계로 이동할 준비가 되었습니다.</p>
+            <button className="primary large" onClick={() => setCompletionAlert(null)}>
+              확인
+            </button>
+          </section>
+        </div>
+      )}
     </section>
   );
 }

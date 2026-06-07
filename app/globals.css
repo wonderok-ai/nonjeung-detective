@@ -188,6 +188,16 @@ code { color: var(--gold); }
 .team-overview-card { padding: 0; overflow: hidden; transition: border-color .18s, transform .18s; }
 .team-overview-card:hover { transform: translateY(-2px); border-color: rgba(244,201,93,.28); }
 .team-overview-card.expanded { grid-column: 1 / -1; transform: none; border-color: rgba(244,201,93,.42); }
+.team-overview-card.round2-complete {
+  border-color: rgba(74, 222, 128, .85);
+  background: linear-gradient(145deg, rgba(22, 101, 52, .32), rgba(22, 32, 52, .94));
+  box-shadow: 0 0 0 1px rgba(74, 222, 128, .18), 0 18px 45px rgba(20, 83, 45, .24);
+}
+.team-overview-card.round2-complete:hover { border-color: #4ade80; }
+.team-overview-card.round2-complete .team-stage {
+  color: #bbf7d0; background: rgba(22, 101, 52, .7);
+  display: inline-flex; align-items: center; gap: 5px;
+}
 .team-card-summary {
   width: 100%; padding: 20px; border: 0; color: var(--ink); background: transparent;
   text-align: left; display: block;
@@ -197,6 +207,22 @@ code { color: var(--gold); }
   padding: 6px 9px; border-radius: 99px; color: var(--muted); background: #10192a;
   font-size: 12px; font-weight: 800;
 }
+.phase-move-button { white-space: nowrap; }
+.completion-modal-backdrop {
+  position: fixed; z-index: 60; inset: 0; padding: 24px;
+  display: grid; place-items: center; background: rgba(3, 7, 18, .76);
+  backdrop-filter: blur(8px);
+}
+.completion-modal {
+  width: min(460px, 100%); padding: 34px; border-radius: 24px;
+  border: 1px solid rgba(74, 222, 128, .55);
+  background: linear-gradient(145deg, #192941, #101827);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, .48);
+  text-align: center;
+}
+.completion-modal > svg { color: #4ade80; margin-bottom: 12px; }
+.completion-modal h2 { margin: 10px 0; font: 30px "Jua", sans-serif; }
+.completion-modal p { margin: 0 0 24px; color: var(--muted); font-size: 17px; }
 .team-progress-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .team-progress-grid span {
   min-height: 57px; padding: 9px 10px; border-radius: 10px; background: #10192a;
