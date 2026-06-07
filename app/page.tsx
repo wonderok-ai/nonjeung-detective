@@ -235,7 +235,10 @@ export default function Home() {
       setView("teacher");
       setSelectedTeacherTeamId(screen === "teacher-detail" ? teamId ?? null : null);
     }
-    if (screen === "student-join") setView("student-join");
+    if (screen === "student-join") {
+      setStudentJoinCode("");
+      setView("student-join");
+    }
     if (screen.startsWith("student-") && screen !== "student-join") setView("student");
   }
 
@@ -268,8 +271,6 @@ export default function Home() {
         const studentSession = JSON.parse(
           localStorage.getItem(studentSessionKey) ?? "null",
         ) as StudentSession | null;
-
-        if (studentSession?.code) setStudentJoinCode(studentSession.code);
 
         if (
           studentSession &&
@@ -326,7 +327,12 @@ export default function Home() {
           localStorage.removeItem(studentSessionKey);
         }
 
-        if (teacherSession && (!historyScreen || historyScreen.startsWith("teacher-"))) {
+        if (
+          teacherSession &&
+          (!historyScreen ||
+            historyScreen === "teacher-dashboard" ||
+            historyScreen === "teacher-detail")
+        ) {
           await ensureAnonymousUser();
           const [roomSnap, teamDocs] = await Promise.all([
             getDoc(refs.class(teacherSession.roomId)),
@@ -422,10 +428,7 @@ export default function Home() {
   }, [room?.phase, view, restoring]);
 
   function openStudentJoin() {
-    const savedSession = JSON.parse(
-      localStorage.getItem(studentSessionKey) ?? "null",
-    ) as StudentSession | null;
-    setStudentJoinCode(savedSession?.code ?? "");
+    setStudentJoinCode("");
     navigate("student-join");
   }
 
@@ -850,7 +853,7 @@ export default function Home() {
           <span className="brand-mark">?</span>
           <span>논증 탐정단</span>
         </button>
-        {room && view !== "home" && (
+        {room && (view === "teacher" || view === "student") && (
           <div className="room-chip">
             <span>{room.name}</span>
             <strong>{room.code}</strong>
@@ -1332,18 +1335,10 @@ function StudentJoin({
   const [teamId, setTeamId] = useState("auto");
 
   useEffect(() => {
-    const savedSession = JSON.parse(
-      localStorage.getItem(studentSessionKey) ?? "null",
-    ) as StudentSession | null;
-    setCode(defaultCode || savedSession?.code || "");
-    if (
-      savedSession &&
-      (!defaultCode || savedSession.code === defaultCode.trim().toUpperCase())
-    ) {
-      setName(savedSession.studentName);
-      setCharacterId(savedSession.avatar);
-      setTeamId(savedSession.teamId);
-    }
+    setCode(defaultCode);
+    setName("");
+    setCharacterId("fox");
+    setTeamId("auto");
   }, [defaultCode]);
 
   return (
