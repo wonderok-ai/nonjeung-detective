@@ -35,7 +35,18 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .back-button:hover { color: var(--gold); border-color: rgba(244,201,93,.35); }
 .screen-history-controls { display: flex; gap: 10px; align-items: center; }
 .screen-history-controls .back-button { margin-bottom: 18px; }
-.student-back-button { position: absolute; top: 104px; left: clamp(20px, 5vw, 72px); }
+.student-stage-controls { display: flex; gap: 10px; align-items: center; }
+.student-stage-controls .back-button { margin-bottom: 18px; }
+.student-stage-controls.floating {
+  position: absolute;
+  top: 104px;
+  left: clamp(20px, 5vw, 72px);
+}
+.student-next-button {
+  color: var(--ink);
+  border-color: rgba(244,201,93,.35);
+  background: rgba(244,201,93,.12);
+}
 
 .topbar {
   height: 76px;

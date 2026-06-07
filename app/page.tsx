@@ -320,6 +320,34 @@ export default function Home() {
     applyScreen(screen, options?.teamId);
   }
 
+  function moveStudentStage(direction: "previous" | "next") {
+    if (!room) return;
+
+    const phases: GamePhase[] = ["lobby", "round1", "round2", "finished"];
+    const currentPhase = screenToStudentPhase(appScreen, room.phase);
+    const currentIndex = phases.indexOf(currentPhase);
+
+    if (direction === "previous") {
+      setNotice("");
+      if (currentIndex <= 0) {
+        navigate("student-join");
+        return;
+      }
+      navigate(phaseToStudentScreen(phases[currentIndex - 1]));
+      return;
+    }
+
+    const nextIndex = currentIndex + 1;
+    const teacherPhaseIndex = phases.indexOf(room.phase);
+    if (nextIndex >= phases.length || nextIndex > teacherPhaseIndex) {
+      setNotice("아직 다음 단계가 열리지 않았습니다.");
+      return;
+    }
+
+    setNotice("");
+    navigate(phaseToStudentScreen(phases[nextIndex]));
+  }
+
   useEffect(() => {
     const restoreSession = async () => {
       if (!firebaseEnabled || !db) {
@@ -995,7 +1023,8 @@ export default function Home() {
           student={student}
           teamMemberCount={members.filter((member) => member.teamId === selectedTeam.id).length}
           displayPhase={screenToStudentPhase(appScreen, room.phase)}
-          onBack={() => window.history.back()}
+          onBack={() => moveStudentStage("previous")}
+          onNext={() => moveStudentStage("next")}
           reports={reports}
           onTeamPatch={(patch) => patchTeam(selectedTeam.id, patch)}
           onReport={async (report) => {
@@ -1689,6 +1718,27 @@ function StudentJoin({
   );
 }
 
+function StudentStageControls({
+  onPrevious,
+  onNext,
+  floating = false,
+}: {
+  onPrevious: () => void;
+  onNext: () => void;
+  floating?: boolean;
+}) {
+  return (
+    <div className={`student-stage-controls${floating ? " floating" : ""}`}>
+      <button className="back-button" onClick={onPrevious} type="button">
+        ← 이전 단계
+      </button>
+      <button className="back-button student-next-button" onClick={onNext} type="button">
+        다음 단계 →
+      </button>
+    </div>
+  );
+}
+
 function StudentGame({
   room,
   team,
@@ -1697,6 +1747,7 @@ function StudentGame({
   teamMemberCount,
   displayPhase,
   onBack,
+  onNext,
   reports,
   onTeamPatch,
   onReport,
@@ -1708,6 +1759,7 @@ function StudentGame({
   teamMemberCount: number;
   displayPhase: GamePhase;
   onBack: () => void;
+  onNext: () => void;
   reports: Report[];
   onTeamPatch: (patch: Partial<Team>) => void;
   onReport: (report: Report) => void;
@@ -1838,9 +1890,7 @@ function StudentGame({
   if (displayPhase === "lobby") {
     return (
       <section className="waiting-room">
-        <button className="back-button student-back-button" onClick={onBack}>
-          ← 이전 단계
-        </button>
+        <StudentStageControls floating onPrevious={onBack} onNext={onNext} />
         <span className="character-hero">{character?.emoji}</span>
         <span className="eyebrow">{team.name} · {student.name} 탐정</span>
         <h1>사건 파일이 열리기를 기다리는 중...</h1>
@@ -1853,9 +1903,7 @@ function StudentGame({
   if (displayPhase === "finished") {
     return (
       <section className="result-shell">
-        <button className="back-button student-back-button" onClick={onBack}>
-          ← 이전 단계
-        </button>
+        <StudentStageControls floating onPrevious={onBack} onNext={onNext} />
         <span className="eyebrow">수사 결과 보고서</span>
         <WinnerAnnouncement
           winners={winners}
@@ -1890,9 +1938,7 @@ function StudentGame({
     return (
       <section className="round-shell">
         {hintPopup}
-        <button className="back-button" onClick={onBack}>
-          ← 이전 단계
-        </button>
+        <StudentStageControls onPrevious={onBack} onNext={onNext} />
         <RoundHeader round="ROUND 2" title="왜 그렇게 판단했나요?" team={team} student={student} />
         <div className="round2-layout">
           <aside className="panel completed-text">
@@ -1964,9 +2010,7 @@ function StudentGame({
   return (
     <section className="round-shell">
       {hintPopup}
-      <button className="back-button" onClick={onBack}>
-        ← 이전 단계
-      </button>
+      <StudentStageControls onPrevious={onBack} onNext={onNext} />
       <RoundHeader round="ROUND 1" title="사건의 문장을 복원하라" team={team} student={student} />
       <div className="game-layout">
         <div className="card-stage">
