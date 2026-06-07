@@ -53,10 +53,19 @@ export function calculateScore(
   reports: Report[],
   durationMinutes: number,
   startedAt: number | null,
-  finishedAt = Date.now(),
 ) {
-  let score = arraysEqual(team.currentOrder, team.originalSentences) ? 35 : 0;
-  if (team.selectedType === team.correctType) score += 25;
+  let score = 0;
+
+  if (team.round1SubmittedAt) {
+    if (arraysEqual(team.currentOrder, team.originalSentences)) score += 35;
+    if (team.selectedType === team.correctType) score += 25;
+
+    if (startedAt) {
+      const elapsed = Math.max(0, team.round1SubmittedAt - startedAt);
+      const total = durationMinutes * 60_000;
+      score += Math.max(0, Math.round(10 * (1 - elapsed / total)));
+    }
+  }
 
   if (reports.length) {
     const reasonPoints =
@@ -70,11 +79,6 @@ export function calculateScore(
     score += reasonPoints + explanationPoints;
   }
 
-  if (startedAt) {
-    const elapsed = Math.max(0, finishedAt - startedAt);
-    const total = durationMinutes * 60_000;
-    score += Math.max(0, Math.round(10 * (1 - elapsed / total)));
-  }
   if (team.hintSent) score -= 5;
   return Math.max(0, Math.round(score));
 }
