@@ -1722,19 +1722,23 @@ function StudentStageControls({
   onPrevious,
   onNext,
   floating = false,
+  showNext = true,
 }: {
   onPrevious: () => void;
   onNext: () => void;
   floating?: boolean;
+  showNext?: boolean;
 }) {
   return (
     <div className={`student-stage-controls${floating ? " floating" : ""}`}>
       <button className="back-button" onClick={onPrevious} type="button">
         ← 이전 단계
       </button>
-      <button className="back-button student-next-button" onClick={onNext} type="button">
-        다음 단계 →
-      </button>
+      {showNext && (
+        <button className="back-button student-next-button" onClick={onNext} type="button">
+          다음 단계 →
+        </button>
+      )}
     </div>
   );
 }
@@ -1903,7 +1907,7 @@ function StudentGame({
   if (displayPhase === "finished") {
     return (
       <section className="result-shell">
-        <StudentStageControls floating onPrevious={onBack} onNext={onNext} />
+        <StudentStageControls floating onPrevious={onBack} onNext={onNext} showNext={false} />
         <span className="eyebrow">수사 결과 보고서</span>
         <WinnerAnnouncement
           winners={winners}
