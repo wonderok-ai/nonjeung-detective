@@ -196,6 +196,62 @@ function screenToStudentPhase(screen: AppScreen, fallback: GamePhase): GamePhase
     : fallback;
 }
 
+function getWinningTeams(teams: Team[]) {
+  if (!teams.length || teams.some((team) => team.score === null)) return [];
+  const highestScore = Math.max(...teams.map((team) => team.score ?? 0));
+  return teams.filter((team) => team.score === highestScore);
+}
+
+function WinnerAnnouncement({
+  winners,
+  open,
+  onClose,
+}: {
+  winners: Team[];
+  open: boolean;
+  onClose: () => void;
+}) {
+  if (!winners.length) return null;
+  const isTie = winners.length > 1;
+  const score = winners[0].score ?? 0;
+  const winnerNames = winners.map((team) => team.name).join(", ");
+
+  return (
+    <>
+      <div className="winner-banner">
+        <Trophy />
+        <strong>{isTie ? "공동 우승" : "우승 모둠"}: {winnerNames}</strong>
+        <span>{score}점</span>
+      </div>
+      {open && (
+        <div className="winner-modal-backdrop" role="presentation">
+          <section
+            className="winner-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="winner-modal-title"
+          >
+            <i className="winner-sparkle sparkle-one">✦</i>
+            <i className="winner-sparkle sparkle-two">✧</i>
+            <i className="winner-sparkle sparkle-three">✦</i>
+            <Trophy className="winner-trophy" size={82} />
+            <span className="eyebrow">{isTie ? "최종 공동 우승 발표" : "최종 우승 발표"}</span>
+            <h2 id="winner-modal-title">
+              🏆 {isTie ? "논증 탐정단 공동 우승!" : "논증 탐정단 우승!"}
+            </h2>
+            <div className="winner-team-list">
+              {winners.map((team) => <strong key={team.id}>🎉 {team.name}</strong>)}
+            </div>
+            <p>최종 점수: <b>{score}점</b></p>
+            <small>축하합니다!</small>
+            <button className="primary large" onClick={onClose}>결과 확인하기</button>
+          </section>
+        </div>
+      )}
+    </>
+  );
+}
+
 function SortableCard({ id, index }: { id: string; index: number }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id });
@@ -927,6 +983,7 @@ export default function Home() {
         <StudentGame
           room={room}
           team={selectedTeam}
+          teams={teams}
           student={student}
           teamMemberCount={members.filter((member) => member.teamId === selectedTeam.id).length}
           displayPhase={screenToStudentPhase(appScreen, room.phase)}
@@ -1134,9 +1191,22 @@ function TeacherDashboard({
   const [hintRequestTeamId, setHintRequestTeamId] = useState<string | null>(null);
   const [popupHint, setPopupHint] = useState("");
   const [completionAlert, setCompletionAlert] = useState<"round1" | "round2" | null>(null);
+  const [winnerPopupOpen, setWinnerPopupOpen] = useState(false);
   const round1AlertedRef = useRef(false);
   const round2AlertedRef = useRef(false);
   const dismissedHintRequestsRef = useRef<Set<string>>(new Set());
+  const winners = getWinningTeams(teams);
+  const winnerSeenKey = `argument-detectives:winner-seen:teacher:${room.id}`;
+
+  useEffect(() => {
+    if (room.phase !== "finished" || !winners.length) return;
+    if (localStorage.getItem(winnerSeenKey) !== "true") setWinnerPopupOpen(true);
+  }, [room.phase, winners.length, winnerSeenKey]);
+
+  function closeWinnerPopup() {
+    localStorage.setItem(winnerSeenKey, "true");
+    setWinnerPopupOpen(false);
+  }
 
   const allRound1Submitted =
     teams.length > 0 && teams.every((team) => Boolean(team.round1SubmittedAt));
@@ -1245,6 +1315,14 @@ function TeacherDashboard({
           )}
         </div>
       </div>
+
+      {room.phase === "finished" && (
+        <WinnerAnnouncement
+          winners={winners}
+          open={winnerPopupOpen}
+          onClose={closeWinnerPopup}
+        />
+      )}
 
       <div className="summary-strip">
         <Summary icon={<Users />} label="입장 학생" value={`${members.length}명`} />
@@ -1603,6 +1681,7 @@ function StudentJoin({
 function StudentGame({
   room,
   team,
+  teams,
   student,
   teamMemberCount,
   displayPhase,
@@ -1613,6 +1692,7 @@ function StudentGame({
 }: {
   room: ClassRoom;
   team: Team;
+  teams: Team[];
   student: Member;
   teamMemberCount: number;
   displayPhase: GamePhase;
@@ -1624,6 +1704,7 @@ function StudentGame({
   const [reasonChoice, setReasonChoice] = useState<"A" | "B" | "C">("A");
   const [explanation, setExplanation] = useState("");
   const [hintPopupOpen, setHintPopupOpen] = useState(false);
+  const [winnerPopupOpen, setWinnerPopupOpen] = useState(false);
   const audioContextRef = useRef<AudioContext | null>(null);
   const draftReadyRef = useRef(false);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
@@ -1631,6 +1712,13 @@ function StudentGame({
   const myReport = reports.find((report) => report.studentId === student.id);
   const draftKey = `argument-detectives:report-draft:${room.id}:${student.id}`;
   const seenHintKey = `argument-detectives:seen-hint:${room.id}:${student.id}`;
+  const winnerSeenKey = `argument-detectives:winner-seen:student:${room.id}:${student.id}`;
+  const winners = getWinningTeams(teams);
+
+  useEffect(() => {
+    if (displayPhase !== "finished" || !winners.length) return;
+    if (localStorage.getItem(winnerSeenKey) !== "true") setWinnerPopupOpen(true);
+  }, [displayPhase, winners.length, winnerSeenKey]);
 
   useEffect(() => {
     if (!team.hintSent) {
@@ -1713,6 +1801,11 @@ function StudentGame({
     setHintPopupOpen(false);
   }
 
+  function closeWinnerPopup() {
+    localStorage.setItem(winnerSeenKey, "true");
+    setWinnerPopupOpen(false);
+  }
+
   const hintPopup = hintPopupOpen && team.hintSent && (
     <div className="completion-modal-backdrop" role="presentation">
       <section
@@ -1753,6 +1846,11 @@ function StudentGame({
           ← 이전 단계
         </button>
         <span className="eyebrow">수사 결과 보고서</span>
+        <WinnerAnnouncement
+          winners={winners}
+          open={winnerPopupOpen}
+          onClose={closeWinnerPopup}
+        />
         <div className="result-score">
           <span>{character?.emoji}</span>
           <strong>{team.score}</strong>
