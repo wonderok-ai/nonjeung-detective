@@ -39,6 +39,8 @@ export interface Team {
   hintRequested: boolean;
   hintSent: string | null;
   round1SubmittedAt: number | null;
+  finalOrder?: string[] | null;
+  finalSelectedType?: ArgumentType | null;
   score: number | null;
   lastMovedBy?: string | null;
   lastMovedById?: string | null;
@@ -52,6 +54,8 @@ export interface Member {
   teamId: string;
   joinedAt: number;
   online: boolean;
+  round1SubmittedAt?: number | null;
+  moveCount?: number;
 }
 
 export interface Report {

@@ -56,6 +56,8 @@ import {
   calculateScore,
   calculateStudentScore,
   correctReason,
+  getFinalOrder,
+  getFinalSelectedType,
   getBadges,
   parseTeamText,
   reasonOptions,
@@ -162,6 +164,58 @@ type AppScreen =
 const teacherSessionKey = "argument-detectives:teacher";
 const studentSessionKey = "argument-detectives:student";
 
+interface BgmPattern {
+  notes: number[];
+  spacing: number;
+  phraseRest: number;
+  wave: OscillatorType;
+  attack: number;
+  release: number;
+  noteVolume: number;
+}
+
+function getLobbyBgmPattern(): BgmPattern {
+  return {
+    notes: [196, 246.94, 293.66, 246.94],
+    spacing: 1.05,
+    phraseRest: 2.2,
+    wave: "sine",
+    attack: 0.28,
+    release: 1.05,
+    noteVolume: 0.2,
+  };
+}
+
+function getRound1BgmPattern(): BgmPattern {
+  return {
+    notes: [220, 261.63, 329.63, 293.66, 246.94],
+    spacing: 0.82,
+    phraseRest: 1.9,
+    wave: "sine",
+    attack: 0.22,
+    release: 0.9,
+    noteVolume: 0.18,
+  };
+}
+
+function getRound2BgmPattern(): BgmPattern {
+  return {
+    notes: [174.61, 220, 261.63, 220],
+    spacing: 1.15,
+    phraseRest: 2.5,
+    wave: "sine",
+    attack: 0.32,
+    release: 1.15,
+    noteVolume: 0.19,
+  };
+}
+
+function getBgmPattern(phase: Exclude<GamePhase, "finished">) {
+  if (phase === "lobby") return getLobbyBgmPattern();
+  if (phase === "round1") return getRound1BgmPattern();
+  return getRound2BgmPattern();
+}
+
 interface StudentSession {
   code: string;
   roomId: string;
@@ -262,9 +316,17 @@ function WinnerAnnouncement({
   );
 }
 
-function SortableCard({ id, index }: { id: string; index: number }) {
+function SortableCard({
+  id,
+  index,
+  disabled = false,
+}: {
+  id: string;
+  index: number;
+  disabled?: boolean;
+}) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
-    useSortable({ id });
+    useSortable({ id, disabled });
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,
@@ -272,10 +334,16 @@ function SortableCard({ id, index }: { id: string; index: number }) {
   };
 
   return (
-    <div ref={setNodeRef} style={style} className="sentence-card">
+    <div ref={setNodeRef} style={style} className={`sentence-card${disabled ? " disabled" : ""}`}>
       <span className="card-number">{index + 1}</span>
       <p>{id}</p>
-      <button className="drag-handle" {...attributes} {...listeners} aria-label="문장 이동">
+      <button
+        className="drag-handle"
+        disabled={disabled}
+        {...attributes}
+        {...listeners}
+        aria-label="문장 이동"
+      >
         <GripVertical size={30} />
       </button>
     </div>
@@ -566,6 +634,10 @@ export default function Home() {
             ...current.filter((member) => member.teamId !== team.id),
             ...incoming,
           ]);
+          setStudent((current) => {
+            if (!current) return current;
+            return incoming.find((member) => member.id === current.id) ?? current;
+          });
         },
         () => setNotice(`${team.name} 학생 목록을 동기화하지 못했습니다.`),
       );
@@ -616,6 +688,7 @@ export default function Home() {
     overId: string,
     mover: Member,
   ) {
+    if (!room || room.phase !== "round1" || mover.round1SubmittedAt) return;
     const movedAt = Date.now();
     const moveInOrder = (order: string[]) => {
       const oldIndex = order.indexOf(activeId);
@@ -637,15 +710,34 @@ export default function Home() {
           : team,
       ),
     );
+    setMembers((current) =>
+      current.map((member) =>
+        member.id === mover.id
+          ? { ...member, moveCount: (member.moveCount ?? 0) + 1 }
+          : member,
+      ),
+    );
+    setStudent((current) =>
+      current?.id === mover.id
+        ? { ...current, moveCount: (current.moveCount ?? 0) + 1 }
+        : current,
+    );
 
     if (!firebaseEnabled || !room || room.id === "demo" || !db) return;
 
     try {
       await runTransaction(db, async (transaction) => {
         const teamRef = refs.team(room.id, teamId);
-        const snapshot = await transaction.get(teamRef);
-        if (!snapshot.exists()) throw new Error("모둠 정보를 찾을 수 없습니다.");
+        const memberRef = refs.member(room.id, teamId, mover.id);
+        const [snapshot, memberSnapshot] = await Promise.all([
+          transaction.get(teamRef),
+          transaction.get(memberRef),
+        ]);
+        if (!snapshot.exists() || !memberSnapshot.exists()) {
+          throw new Error("모둠 활동 정보를 찾을 수 없습니다.");
+        }
         const latestTeam = snapshot.data() as Team;
+        const latestMember = memberSnapshot.data() as Member;
         if (latestTeam.round1SubmittedAt) return;
         transaction.update(teamRef, {
           currentOrder: moveInOrder(latestTeam.currentOrder),
@@ -653,9 +745,86 @@ export default function Home() {
           lastMovedById: mover.id,
           lastMoveAt: movedAt,
         });
+        transaction.update(memberRef, {
+          moveCount: (latestMember.moveCount ?? 0) + 1,
+        });
       });
     } catch {
       setNotice("문장 이동을 저장하지 못했습니다. 잠시 후 다시 이동해 주세요.");
+    }
+  }
+
+  async function setRound1Submission(team: Team, member: Member, submitted: boolean) {
+    if (!room || room.phase !== "round1") {
+      setNotice("ROUND 2가 열린 뒤에는 ROUND 1 제출 상태를 바꿀 수 없습니다.");
+      return;
+    }
+    if (submitted && !team.selectedType) {
+      setNotice("논증 방법을 선택한 뒤 제출해 주세요.");
+      return;
+    }
+
+    const submittedAt = submitted ? Date.now() : null;
+    const teamMembers = members.filter((item) => item.teamId === team.id);
+    const updatedMembers = teamMembers.map((item) =>
+      item.id === member.id ? { ...item, round1SubmittedAt: submittedAt } : item,
+    );
+    const allSubmitted =
+      updatedMembers.length > 0 &&
+      updatedMembers.every((item) => Boolean(item.round1SubmittedAt));
+    const teamPatch: Partial<Team> = {
+      round1SubmittedAt: allSubmitted ? Date.now() : null,
+      finalOrder: allSubmitted ? [...team.currentOrder] : null,
+      finalSelectedType: allSubmitted ? team.selectedType : null,
+    };
+
+    setMembers((current) =>
+      current.map((item) =>
+        item.id === member.id ? { ...item, round1SubmittedAt: submittedAt } : item,
+      ),
+    );
+    setStudent((current) =>
+      current?.id === member.id ? { ...current, round1SubmittedAt: submittedAt } : current,
+    );
+    setTeams((current) =>
+      current.map((item) => (item.id === team.id ? { ...item, ...teamPatch } : item)),
+    );
+
+    if (!firebaseEnabled || room.id === "demo" || !db) return;
+
+    try {
+      const memberRefs = teamMembers.map((item) => refs.member(room.id, team.id, item.id));
+      await runTransaction(db, async (transaction) => {
+        const teamRef = refs.team(room.id, team.id);
+        const [teamSnapshot, ...memberSnapshots] = await Promise.all([
+          transaction.get(teamRef),
+          ...memberRefs.map((memberRef) => transaction.get(memberRef)),
+        ]);
+        if (!teamSnapshot.exists()) throw new Error("모둠 정보를 찾을 수 없습니다.");
+
+        const latestTeam = teamSnapshot.data() as Team;
+        const latestMembers = memberSnapshots.map((snapshot, index) => ({
+          id: memberRefs[index].id,
+          ...(snapshot.data() as Omit<Member, "id">),
+        }));
+        const finalMembers = latestMembers.map((item) =>
+          item.id === member.id ? { ...item, round1SubmittedAt: submittedAt } : item,
+        );
+        const completed =
+          finalMembers.length > 0 &&
+          finalMembers.every((item) => Boolean(item.round1SubmittedAt));
+
+        transaction.update(refs.member(room.id, team.id, member.id), {
+          round1SubmittedAt: submittedAt,
+        });
+        transaction.update(teamRef, {
+          round1SubmittedAt: completed ? Date.now() : null,
+          finalOrder: completed ? [...latestTeam.currentOrder] : null,
+          finalSelectedType: completed ? latestTeam.selectedType : null,
+        });
+      });
+    } catch {
+      setNotice("ROUND 1 제출 상태를 저장하지 못했습니다. 다시 시도해 주세요.");
     }
   }
 
@@ -926,6 +1095,8 @@ export default function Home() {
         teamId,
         joinedAt: Date.now(),
         online: true,
+        round1SubmittedAt: null,
+        moveCount: 0,
       };
       setStudent(member);
       setMembers((current) => [...current, member]);
@@ -936,7 +1107,16 @@ export default function Home() {
           teamId,
           joinedAt: Date.now(),
           online: true,
+          round1SubmittedAt: null,
+          moveCount: 0,
         });
+        if (activeRoom.phase === "round1") {
+          await updateDoc(refs.team(activeRoom.id, teamId), {
+            round1SubmittedAt: null,
+            finalOrder: null,
+            finalSelectedType: null,
+          });
+        }
       }
       setStudentJoinCode(normalizedCode);
       localStorage.setItem(
@@ -1077,9 +1257,13 @@ export default function Home() {
           onBack={() => moveStudentStage("previous")}
           onNext={() => moveStudentStage("next")}
           reports={reports}
+          teamMembers={members.filter((member) => member.teamId === selectedTeam.id)}
           onTeamPatch={(patch) => patchTeam(selectedTeam.id, patch)}
           onMoveSentence={(activeId, overId) =>
             moveTeamSentence(selectedTeam.id, activeId, overId, student)
+          }
+          onRound1Submission={(submitted) =>
+            setRound1Submission(selectedTeam, student, submitted)
           }
           onReport={async (report) => {
             setReports((current) => [
@@ -1423,7 +1607,7 @@ function TeacherDashboard({
         <Summary
           icon={<BookOpenCheck />}
           label="ROUND 1 제출"
-          value={`${teams.filter((team) => team.round1SubmittedAt).length}/${teams.length}`}
+          value={`${members.filter((member) => member.round1SubmittedAt).length}/${members.length || 0}명`}
         />
         <Summary
           icon={<Send />}
@@ -1443,6 +1627,9 @@ function TeacherDashboard({
             );
             const isRound2Complete =
               teamMembers.length > 0 && teamReports.length >= teamMembers.length;
+            const round1SubmittedMembers = teamMembers.filter((member) =>
+              Boolean(member.round1SubmittedAt),
+            );
             const isRound1Complete = Boolean(team.round1SubmittedAt);
             const isExpanded = selectedTeamId === team.id;
             const currentScore =
@@ -1480,7 +1667,12 @@ function TeacherDashboard({
                   <div className="team-progress-grid">
                     <span><small>입장 인원</small><strong>{teamMembers.length}명</strong></span>
                     <span><small>힌트</small><strong>{team.hintSent ? "사용" : team.hintRequested ? "요청" : "미사용"}</strong></span>
-                    <span><small>ROUND 1</small><strong>{team.round1SubmittedAt ? "제출" : "미제출"}</strong></span>
+                    <span>
+                      <small>ROUND 1 제출</small>
+                      <strong>
+                        {round1SubmittedMembers.length}/{teamMembers.length || 0}명
+                      </strong>
+                    </span>
                     <span><small>ROUND 2</small><strong>{teamReports.length}/{teamMembers.length || 0}명</strong></span>
                   </div>
                   <div className="team-member-names">
@@ -1488,7 +1680,10 @@ function TeacherDashboard({
                     <div>
                       {teamMembers.length ? (
                         teamMembers.map((member) => (
-                          <span key={member.id}>{member.name}</span>
+                          <span key={member.id}>
+                            <b>{member.name}</b>
+                            <small>{member.moveCount ?? 0}회 이동</small>
+                          </span>
                         ))
                       ) : (
                         <em>입장 학생 없음</em>
@@ -1524,7 +1719,10 @@ function TeacherDashboard({
                           return (
                             <span title={member.name} key={member.id}>
                               {character?.emoji} {member.name}
-                              <small>{memberScore}점</small>
+                              <small>
+                                {member.round1SubmittedAt ? "R1 제출" : "R1 대기"} ·{" "}
+                                {member.moveCount ?? 0}회 · {memberScore}점
+                              </small>
                             </span>
                           );
                         })
@@ -1533,7 +1731,7 @@ function TeacherDashboard({
                       )}
                     </div>
                     <div className="mini-order">
-                      {team.currentOrder.map((sentence, index) => (
+                      {getFinalOrder(team).map((sentence, index) => (
                         <p
                           key={`${sentence}-${index}`}
                           className={
@@ -1547,7 +1745,7 @@ function TeacherDashboard({
                       ))}
                     </div>
                     <div className="team-meta">
-                      <span>논증 선택: <strong>{team.selectedType ?? "미선택"}</strong></span>
+                      <span>논증 선택: <strong>{getFinalSelectedType(team) ?? "미선택"}</strong></span>
                       <span>개인 설명: <strong>{teamReports.length}명</strong></span>
                     </div>
                     {team.hintRequested && !team.hintSent && (
@@ -1860,8 +2058,10 @@ function StudentGame({
   onBack,
   onNext,
   reports,
+  teamMembers,
   onTeamPatch,
   onMoveSentence,
+  onRound1Submission,
   onReport,
 }: {
   room: ClassRoom;
@@ -1873,8 +2073,10 @@ function StudentGame({
   onBack: () => void;
   onNext: () => void;
   reports: Report[];
+  teamMembers: Member[];
   onTeamPatch: (patch: Partial<Team>) => void;
   onMoveSentence: (activeId: string, overId: string) => void;
+  onRound1Submission: (submitted: boolean) => void;
   onReport: (report: Report) => void;
 }) {
   const [reasonChoice, setReasonChoice] = useState<"A" | "B" | "C">("A");
@@ -1898,6 +2100,11 @@ function StudentGame({
   const seenHintKey = `argument-detectives:seen-hint:${room.id}:${student.id}`;
   const winnerSeenKey = `argument-detectives:winner-seen:student:${room.id}:${student.id}`;
   const winners = getWinningTeams(teams);
+  const round1ReadOnly = room.phase !== "round1";
+  const studentRound1Submitted = Boolean(student.round1SubmittedAt);
+  const round1SubmissionCount = teamMembers.filter((member) =>
+    Boolean(member.round1SubmittedAt),
+  ).length;
   const teamReports = reports.filter((report) => report.teamId === team.id);
   const studentScore = calculateStudentScore(
     team,
@@ -2036,37 +2243,34 @@ function StudentGame({
     if (context.state === "suspended") void context.resume();
 
     const master = context.createGain();
-    master.gain.setValueAtTime(0.014, context.currentTime);
+    master.gain.setValueAtTime(0.009, context.currentTime);
     master.connect(context.destination);
     bgmMasterRef.current = master;
 
-    const arrangements: Record<Exclude<GamePhase, "finished">, {
-      notes: number[];
-      spacing: number;
-      wave: OscillatorType;
-    }> = {
-      lobby: { notes: [261.63, 329.63, 392, 329.63], spacing: 0.82, wave: "sine" },
-      round1: { notes: [293.66, 369.99, 440, 369.99, 329.63], spacing: 0.58, wave: "triangle" },
-      round2: { notes: [220, 277.18, 329.63, 277.18], spacing: 0.9, wave: "sine" },
-    };
-    const arrangement = arrangements[phase];
-    const phraseDuration = arrangement.notes.length * arrangement.spacing + 1.4;
+    const pattern = getBgmPattern(phase);
+    const phraseDuration = pattern.notes.length * pattern.spacing + pattern.phraseRest;
 
     const playPhrase = () => {
       const now = context.currentTime;
-      arrangement.notes.forEach((frequency, index) => {
-        const startsAt = now + index * arrangement.spacing;
+      pattern.notes.forEach((frequency, index) => {
+        const startsAt = now + index * pattern.spacing;
         const oscillator = context.createOscillator();
         const envelope = context.createGain();
-        oscillator.type = arrangement.wave;
+        oscillator.type = pattern.wave;
         oscillator.frequency.setValueAtTime(frequency, startsAt);
         envelope.gain.setValueAtTime(0.0001, startsAt);
-        envelope.gain.exponentialRampToValueAtTime(0.28, startsAt + 0.12);
-        envelope.gain.exponentialRampToValueAtTime(0.0001, startsAt + 0.72);
+        envelope.gain.exponentialRampToValueAtTime(
+          pattern.noteVolume,
+          startsAt + pattern.attack,
+        );
+        envelope.gain.exponentialRampToValueAtTime(
+          0.0001,
+          startsAt + pattern.release,
+        );
         oscillator.connect(envelope);
         envelope.connect(master);
         oscillator.start(startsAt);
-        oscillator.stop(startsAt + 0.75);
+        oscillator.stop(startsAt + pattern.release + 0.05);
       });
     };
 
@@ -2086,7 +2290,12 @@ function StudentGame({
 
   function dragEnd(event: DragEndEvent) {
     const { active, over } = event;
-    if (!over || active.id === over.id || team.round1SubmittedAt) return;
+    if (
+      !over ||
+      active.id === over.id ||
+      round1ReadOnly ||
+      studentRound1Submitted
+    ) return;
     onMoveSentence(String(active.id), String(over.id));
     playMoveSound();
   }
@@ -2194,8 +2403,8 @@ function StudentGame({
           )}
         </div>
         <div className="answer-review panel">
-          <p>문장 배열 <strong>{arraysEqual(team.currentOrder, team.originalSentences) ? "정답" : "다시 살펴보기"}</strong></p>
-          <p>논증 방법 <strong>{team.correctType}</strong></p>
+          <p>문장 배열 <strong>{arraysEqual(getFinalOrder(team), team.originalSentences) ? "정답" : "다시 살펴보기"}</strong></p>
+          <p>논증 방법 <strong>{getFinalSelectedType(team) ?? "미선택"}</strong></p>
           <p>나의 설명 <strong>{myReport?.explanation ?? "미제출"}</strong></p>
         </div>
       </section>
@@ -2220,7 +2429,7 @@ function StudentGame({
             <h2>완성한 글</h2>
             <p className="completed-text-help">ROUND 1에서 마지막으로 배열한 순서입니다.</p>
             <ol>
-              {team.currentOrder.map((sentence) => (
+              {getFinalOrder(team).map((sentence) => (
                 <li key={sentence}>{sentence}</li>
               ))}
             </ol>
@@ -2303,7 +2512,12 @@ function StudentGame({
             <SortableContext items={team.currentOrder} strategy={verticalListSortingStrategy}>
               <div className="sentence-list">
                 {team.currentOrder.map((sentence, index) => (
-                  <SortableCard id={sentence} index={index} key={sentence} />
+                  <SortableCard
+                    id={sentence}
+                    index={index}
+                    disabled={round1ReadOnly || studentRound1Submitted}
+                    key={sentence}
+                  />
                 ))}
               </div>
             </SortableContext>
@@ -2317,7 +2531,7 @@ function StudentGame({
               <button
                 className={team.selectedType === type ? "selected" : ""}
                 onClick={() => onTeamPatch({ selectedType: type })}
-                disabled={Boolean(team.round1SubmittedAt)}
+                disabled={round1ReadOnly || studentRound1Submitted}
                 key={type}
               >
                 <span>{type === "연역" ? "▽" : type === "귀납" ? "△" : "↔"}</span>
@@ -2330,21 +2544,50 @@ function StudentGame({
           ) : (
             <button
               className="hint-request"
-              disabled={team.hintRequested}
+              disabled={team.hintRequested || round1ReadOnly}
               onClick={() => onTeamPatch({ hintRequested: true })}
             >
               <Lightbulb /> {team.hintRequested ? "힌트를 기다리는 중" : "힌트 요청 (모둠당 1회)"}
             </button>
           )}
-          <button
-            className="primary full large"
-            disabled={!team.selectedType || Boolean(team.round1SubmittedAt)}
-            onClick={() => onTeamPatch({ round1SubmittedAt: Date.now() })}
-          >
-            <ShieldCheck /> {team.round1SubmittedAt ? "ROUND 1 제출 완료" : "ROUND 1 제출"}
-          </button>
-          {team.round1SubmittedAt && (
-            <p className="success-message">교사가 ROUND 2를 열 때까지 함께 기다려 주세요.</p>
+          <div className="round1-submission-status">
+            <div>
+              <span>모둠 제출 현황</span>
+              <strong>{round1SubmissionCount}/{teamMembers.length}명</strong>
+            </div>
+            <div className="round1-member-statuses">
+              {teamMembers.map((member) => (
+                <span
+                  className={member.round1SubmittedAt ? "submitted" : ""}
+                  key={member.id}
+                >
+                  {member.name} {member.round1SubmittedAt ? "✓" : "대기"}
+                </span>
+              ))}
+            </div>
+          </div>
+          {round1ReadOnly ? (
+            <p className="readonly-message">ROUND 2가 열려 ROUND 1 답안은 읽기 전용입니다.</p>
+          ) : studentRound1Submitted ? (
+            <button
+              className="secondary full large"
+              onClick={() => onRound1Submission(false)}
+            >
+              제출 취소
+            </button>
+          ) : (
+            <button
+              className="primary full large"
+              disabled={!team.selectedType}
+              onClick={() => onRound1Submission(true)}
+            >
+              <ShieldCheck /> 내 ROUND 1 제출
+            </button>
+          )}
+          {studentRound1Submitted && !round1ReadOnly && (
+            <p className="success-message">
+              내 제출이 저장되었습니다. 수정하려면 제출을 취소하세요.
+            </p>
           )}
         </aside>
       </div>

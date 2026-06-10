@@ -48,6 +48,14 @@ export function arraysEqual(a: string[], b: string[]) {
   return a.length === b.length && a.every((item, index) => item === b[index]);
 }
 
+export function getFinalOrder(team: Team) {
+  return team.finalOrder ?? team.currentOrder;
+}
+
+export function getFinalSelectedType(team: Team) {
+  return team.finalSelectedType ?? team.selectedType;
+}
+
 const weakExplanationPatterns = [
   /^(ㅋ+|ㅎ+|ㅇ+|ㄴ+|ㅁ+)$/,
   /^(몰라요?|모름|그냥|아무거나|좋아요?|네|아니요|ㅇㅇ|ㄴㄴ)[.!?~ ]*$/,
@@ -82,7 +90,7 @@ export function scoreExplanation(team: Team, report: Report) {
   }
 
   let score = compact.length >= 18 ? 2 : 1;
-  const selectedMethod = team.selectedType ?? team.correctType;
+  const selectedMethod = getFinalSelectedType(team) ?? team.correctType;
   const relatedMethodWords = methodKeywords[selectedMethod];
   const mentionsMethod = relatedMethodWords.some((keyword) => explanation.includes(keyword));
   const mentionsOtherMethod = (Object.keys(methodKeywords) as ArgumentType[]).some(
@@ -122,8 +130,8 @@ export function calculateScore(
   let score = 0;
 
   if (team.round1SubmittedAt) {
-    if (arraysEqual(team.currentOrder, team.originalSentences)) score += 35;
-    if (team.selectedType === team.correctType) score += 25;
+    if (arraysEqual(getFinalOrder(team), team.originalSentences)) score += 35;
+    if (getFinalSelectedType(team) === team.correctType) score += 25;
 
     if (startedAt) {
       const elapsed = Math.max(0, team.round1SubmittedAt - startedAt);
@@ -157,8 +165,8 @@ export function calculateStudentScore(
   let score = 0;
 
   if (team.round1SubmittedAt) {
-    if (arraysEqual(team.currentOrder, team.originalSentences)) score += 35;
-    if (team.selectedType === team.correctType) score += 25;
+    if (arraysEqual(getFinalOrder(team), team.originalSentences)) score += 35;
+    if (getFinalSelectedType(team) === team.correctType) score += 25;
 
     if (startedAt) {
       const elapsed = Math.max(0, team.round1SubmittedAt - startedAt);
@@ -188,8 +196,8 @@ export function getBadges(team: Team, reports: Report[], memberCount = reports.l
 
   if ((team.score ?? 0) >= 90 || strongRound2) badges.push("논리 탐정단");
   if (
-    arraysEqual(team.currentOrder, team.originalSentences) &&
-    team.selectedType === team.correctType
+    arraysEqual(getFinalOrder(team), team.originalSentences) &&
+    getFinalSelectedType(team) === team.correctType
   ) {
     badges.push("사건 복원 성공");
   }
