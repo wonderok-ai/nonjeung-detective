@@ -148,6 +148,34 @@ export function calculateScore(
   return Math.max(0, Math.round(score));
 }
 
+export function calculateStudentScore(
+  team: Team,
+  report: Report | null | undefined,
+  durationMinutes: number,
+  startedAt: number | null,
+) {
+  let score = 0;
+
+  if (team.round1SubmittedAt) {
+    if (arraysEqual(team.currentOrder, team.originalSentences)) score += 35;
+    if (team.selectedType === team.correctType) score += 25;
+
+    if (startedAt) {
+      const elapsed = Math.max(0, team.round1SubmittedAt - startedAt);
+      const total = durationMinutes * 60_000;
+      score += Math.max(0, Math.round(10 * (1 - elapsed / total)));
+    }
+  }
+
+  if (report) {
+    if (report.reasonChoice === correctReason[team.correctType]) score += 20;
+    score += scoreExplanation(team, report);
+  }
+
+  if (team.hintSent) score -= 5;
+  return Math.max(0, Math.round(score));
+}
+
 export function getBadges(team: Team, reports: Report[], memberCount = reports.length) {
   const badges: string[] = [];
   const strongRound2 =

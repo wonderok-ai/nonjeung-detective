@@ -40,6 +40,9 @@ export interface Team {
   hintSent: string | null;
   round1SubmittedAt: number | null;
   score: number | null;
+  lastMovedBy?: string | null;
+  lastMovedById?: string | null;
+  lastMoveAt?: number | null;
 }
 
 export interface Member {

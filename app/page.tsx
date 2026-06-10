@@ -8,6 +8,7 @@ import {
   getDoc,
   getDocs,
   onSnapshot,
+  runTransaction,
   setDoc,
   updateDoc,
   writeBatch,
@@ -53,6 +54,7 @@ import {
 import {
   arraysEqual,
   calculateScore,
+  calculateStudentScore,
   correctReason,
   getBadges,
   parseTeamText,
@@ -608,6 +610,55 @@ export default function Home() {
     if (firebaseEnabled && room?.id !== "demo") await updateDoc(refs.team(room!.id, teamId), patch);
   }
 
+  async function moveTeamSentence(
+    teamId: string,
+    activeId: string,
+    overId: string,
+    mover: Member,
+  ) {
+    const movedAt = Date.now();
+    const moveInOrder = (order: string[]) => {
+      const oldIndex = order.indexOf(activeId);
+      const newIndex = order.indexOf(overId);
+      if (oldIndex < 0 || newIndex < 0 || oldIndex === newIndex) return order;
+      return arrayMove(order, oldIndex, newIndex);
+    };
+
+    setTeams((current) =>
+      current.map((team) =>
+        team.id === teamId
+          ? {
+              ...team,
+              currentOrder: moveInOrder(team.currentOrder),
+              lastMovedBy: mover.name,
+              lastMovedById: mover.id,
+              lastMoveAt: movedAt,
+            }
+          : team,
+      ),
+    );
+
+    if (!firebaseEnabled || !room || room.id === "demo" || !db) return;
+
+    try {
+      await runTransaction(db, async (transaction) => {
+        const teamRef = refs.team(room.id, teamId);
+        const snapshot = await transaction.get(teamRef);
+        if (!snapshot.exists()) throw new Error("모둠 정보를 찾을 수 없습니다.");
+        const latestTeam = snapshot.data() as Team;
+        if (latestTeam.round1SubmittedAt) return;
+        transaction.update(teamRef, {
+          currentOrder: moveInOrder(latestTeam.currentOrder),
+          lastMovedBy: mover.name,
+          lastMovedById: mover.id,
+          lastMoveAt: movedAt,
+        });
+      });
+    } catch {
+      setNotice("문장 이동을 저장하지 못했습니다. 잠시 후 다시 이동해 주세요.");
+    }
+  }
+
   async function createClass(form: {
     name: string;
     code: string;
@@ -1027,6 +1078,9 @@ export default function Home() {
           onNext={() => moveStudentStage("next")}
           reports={reports}
           onTeamPatch={(patch) => patchTeam(selectedTeam.id, patch)}
+          onMoveSentence={(activeId, overId) =>
+            moveTeamSentence(selectedTeam.id, activeId, overId, student)
+          }
           onReport={async (report) => {
             setReports((current) => [
               ...current.filter((item) => item.studentId !== report.studentId),
@@ -1441,6 +1495,10 @@ function TeacherDashboard({
                       )}
                     </div>
                   </div>
+                  <div className="last-mover-summary">
+                    <small>마지막 이동</small>
+                    <strong>{team.lastMovedBy ?? "기록 없음"}</strong>
+                  </div>
                   <div className="team-card-score">
                     <span>{room.phase === "finished" ? "최종 점수" : "현재 점수"}</span>
                     <strong>{currentScore ?? 0}점</strong>
@@ -1454,9 +1512,19 @@ function TeacherDashboard({
                       {teamMembers.length ? (
                         teamMembers.map((member) => {
                           const character = characters.find((item) => item.id === member.characterId);
+                          const memberReport = teamReports.find(
+                            (report) => report.studentId === member.id,
+                          );
+                          const memberScore = calculateStudentScore(
+                            team,
+                            memberReport,
+                            room.durationMinutes,
+                            room.startedAt,
+                          );
                           return (
                             <span title={member.name} key={member.id}>
                               {character?.emoji} {member.name}
+                              <small>{memberScore}점</small>
                             </span>
                           );
                         })
@@ -1519,6 +1587,14 @@ function TeacherDashboard({
                             <strong>
                               {report.studentName} · {report.reasonChoice}
                               <b>설명 {scoreExplanation(team, report)}/10점</b>
+                              <b>
+                                개인 {calculateStudentScore(
+                                  team,
+                                  report,
+                                  room.durationMinutes,
+                                  room.startedAt,
+                                )}점
+                              </b>
                             </strong>
                             <p>{report.explanation}</p>
                           </div>
@@ -1743,6 +1819,37 @@ function StudentStageControls({
   );
 }
 
+function ScoreTransitionModal({
+  title,
+  studentScore,
+  teamScore,
+  onClose,
+}: {
+  title: string;
+  studentScore: number;
+  teamScore: number;
+  onClose: () => void;
+}) {
+  return (
+    <div className="completion-modal-backdrop" role="presentation">
+      <section
+        className="completion-modal score-transition-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="score-transition-title"
+      >
+        <Trophy size={52} />
+        <h2 id="score-transition-title">{title}</h2>
+        <div className="score-transition-grid">
+          <span>우리 모둠 점수<strong>{teamScore}점</strong></span>
+          <span>내 점수<strong>{studentScore}점</strong></span>
+        </div>
+        <button className="primary large" onClick={onClose}>확인</button>
+      </section>
+    </div>
+  );
+}
+
 function StudentGame({
   room,
   team,
@@ -1754,6 +1861,7 @@ function StudentGame({
   onNext,
   reports,
   onTeamPatch,
+  onMoveSentence,
   onReport,
 }: {
   room: ClassRoom;
@@ -1766,13 +1874,22 @@ function StudentGame({
   onNext: () => void;
   reports: Report[];
   onTeamPatch: (patch: Partial<Team>) => void;
+  onMoveSentence: (activeId: string, overId: string) => void;
   onReport: (report: Report) => void;
 }) {
   const [reasonChoice, setReasonChoice] = useState<"A" | "B" | "C">("A");
   const [explanation, setExplanation] = useState("");
   const [hintPopupOpen, setHintPopupOpen] = useState(false);
   const [winnerPopupOpen, setWinnerPopupOpen] = useState(false);
+  const [bgmEnabled, setBgmEnabled] = useState(false);
+  const [scorePopup, setScorePopup] = useState<{
+    milestone: "round1" | "round2";
+    title: string;
+  } | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const bgmContextRef = useRef<AudioContext | null>(null);
+  const bgmMasterRef = useRef<GainNode | null>(null);
+  const bgmTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const draftReadyRef = useRef(false);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
   const character = characters.find((item) => item.id === student.characterId);
@@ -1781,6 +1898,36 @@ function StudentGame({
   const seenHintKey = `argument-detectives:seen-hint:${room.id}:${student.id}`;
   const winnerSeenKey = `argument-detectives:winner-seen:student:${room.id}:${student.id}`;
   const winners = getWinningTeams(teams);
+  const teamReports = reports.filter((report) => report.teamId === team.id);
+  const studentScore = calculateStudentScore(
+    team,
+    myReport,
+    room.durationMinutes,
+    room.startedAt,
+  );
+  const currentTeamScore =
+    team.score ??
+    calculateScore(team, teamReports, room.durationMinutes, room.startedAt);
+
+  useEffect(() => {
+    const milestone =
+      displayPhase === "round2"
+        ? "round1"
+        : displayPhase === "finished"
+          ? "round2"
+          : null;
+    if (!milestone || (milestone === "round1" && !team.round1SubmittedAt)) return;
+
+    const key = `argument-detectives:score-popup:${milestone}:${room.id}:${student.id}`;
+    if (localStorage.getItem(key) === "true") return;
+    setScorePopup({
+      milestone,
+      title:
+        milestone === "round1"
+          ? `ROUND 1 완료! 현재 내 점수는 ${studentScore}점입니다.`
+          : `ROUND 2까지 완료! 내 최종 점수는 ${studentScore}점입니다.`,
+    });
+  }, [displayPhase, room.id, student.id, studentScore, team.round1SubmittedAt]);
 
   useEffect(() => {
     if (displayPhase !== "finished" || !winners.length) return;
@@ -1816,6 +1963,21 @@ function StudentGame({
     if (myReport) return;
     localStorage.setItem(draftKey, JSON.stringify({ reasonChoice, explanation }));
   }, [draftKey, reasonChoice, explanation, myReport]);
+
+  useEffect(() => {
+    if (bgmEnabled) startBgmLoop(displayPhase);
+    else stopBgmLoop();
+    return stopBgmLoop;
+  }, [bgmEnabled, displayPhase]);
+
+  useEffect(
+    () => () => {
+      stopBgmLoop();
+      if (bgmContextRef.current) void bgmContextRef.current.close();
+      bgmContextRef.current = null;
+    },
+    [],
+  );
 
   function unlockAudio() {
     if (typeof window === "undefined") return;
@@ -1854,12 +2016,78 @@ function StudentGame({
     ring(1320, 0.012, 0.012, 0.14);
   }
 
+  function stopBgmLoop() {
+    if (bgmTimerRef.current) {
+      clearInterval(bgmTimerRef.current);
+      bgmTimerRef.current = null;
+    }
+    if (bgmMasterRef.current) {
+      bgmMasterRef.current.disconnect();
+      bgmMasterRef.current = null;
+    }
+  }
+
+  function startBgmLoop(phase: GamePhase) {
+    stopBgmLoop();
+    if (phase === "finished" || typeof window === "undefined") return;
+
+    if (!bgmContextRef.current) bgmContextRef.current = new window.AudioContext();
+    const context = bgmContextRef.current;
+    if (context.state === "suspended") void context.resume();
+
+    const master = context.createGain();
+    master.gain.setValueAtTime(0.014, context.currentTime);
+    master.connect(context.destination);
+    bgmMasterRef.current = master;
+
+    const arrangements: Record<Exclude<GamePhase, "finished">, {
+      notes: number[];
+      spacing: number;
+      wave: OscillatorType;
+    }> = {
+      lobby: { notes: [261.63, 329.63, 392, 329.63], spacing: 0.82, wave: "sine" },
+      round1: { notes: [293.66, 369.99, 440, 369.99, 329.63], spacing: 0.58, wave: "triangle" },
+      round2: { notes: [220, 277.18, 329.63, 277.18], spacing: 0.9, wave: "sine" },
+    };
+    const arrangement = arrangements[phase];
+    const phraseDuration = arrangement.notes.length * arrangement.spacing + 1.4;
+
+    const playPhrase = () => {
+      const now = context.currentTime;
+      arrangement.notes.forEach((frequency, index) => {
+        const startsAt = now + index * arrangement.spacing;
+        const oscillator = context.createOscillator();
+        const envelope = context.createGain();
+        oscillator.type = arrangement.wave;
+        oscillator.frequency.setValueAtTime(frequency, startsAt);
+        envelope.gain.setValueAtTime(0.0001, startsAt);
+        envelope.gain.exponentialRampToValueAtTime(0.28, startsAt + 0.12);
+        envelope.gain.exponentialRampToValueAtTime(0.0001, startsAt + 0.72);
+        oscillator.connect(envelope);
+        envelope.connect(master);
+        oscillator.start(startsAt);
+        oscillator.stop(startsAt + 0.75);
+      });
+    };
+
+    playPhrase();
+    bgmTimerRef.current = setInterval(playPhrase, phraseDuration * 1000);
+  }
+
+  function toggleBgm() {
+    if (bgmEnabled) {
+      setBgmEnabled(false);
+      return;
+    }
+    if (!bgmContextRef.current) bgmContextRef.current = new window.AudioContext();
+    if (bgmContextRef.current.state === "suspended") void bgmContextRef.current.resume();
+    setBgmEnabled(true);
+  }
+
   function dragEnd(event: DragEndEvent) {
     const { active, over } = event;
     if (!over || active.id === over.id || team.round1SubmittedAt) return;
-    const oldIndex = team.currentOrder.indexOf(String(active.id));
-    const newIndex = team.currentOrder.indexOf(String(over.id));
-    onTeamPatch({ currentOrder: arrayMove(team.currentOrder, oldIndex, newIndex) });
+    onMoveSentence(String(active.id), String(over.id));
     playMoveSound();
   }
 
@@ -1871,6 +2099,15 @@ function StudentGame({
   function closeWinnerPopup() {
     localStorage.setItem(winnerSeenKey, "true");
     setWinnerPopupOpen(false);
+  }
+
+  function closeScorePopup() {
+    if (!scorePopup) return;
+    localStorage.setItem(
+      `argument-detectives:score-popup:${scorePopup.milestone}:${room.id}:${student.id}`,
+      "true",
+    );
+    setScorePopup(null);
   }
 
   const hintPopup = hintPopupOpen && team.hintSent && (
@@ -1890,11 +2127,30 @@ function StudentGame({
       </section>
     </div>
   );
+  const scorePopupModal = scorePopup && (
+    <ScoreTransitionModal
+      title={scorePopup.title}
+      studentScore={studentScore}
+      teamScore={currentTeamScore}
+      onClose={closeScorePopup}
+    />
+  );
+  const musicControl = displayPhase !== "finished" && (
+    <button
+      className={`bgm-control ${bgmEnabled ? "active" : ""}`}
+      type="button"
+      onClick={toggleBgm}
+      aria-pressed={bgmEnabled}
+    >
+      {bgmEnabled ? "♫ 배경음악 끄기" : "♪ 배경음악 켜기"}
+    </button>
+  );
 
   if (displayPhase === "lobby") {
     return (
       <section className="waiting-room">
         <StudentStageControls floating onPrevious={onBack} onNext={onNext} />
+        {musicControl}
         <span className="character-hero">{character?.emoji}</span>
         <span className="eyebrow">{team.name} · {student.name} 탐정</span>
         <h1>사건 파일이 열리기를 기다리는 중...</h1>
@@ -1908,16 +2164,24 @@ function StudentGame({
     return (
       <section className="result-shell">
         <StudentStageControls floating onPrevious={onBack} onNext={onNext} showNext={false} />
+        {scorePopupModal}
         <span className="eyebrow">수사 결과 보고서</span>
         <WinnerAnnouncement
           winners={winners}
-          open={winnerPopupOpen}
+          open={winnerPopupOpen && !scorePopup}
           onClose={closeWinnerPopup}
         />
-        <div className="result-score">
-          <span>{character?.emoji}</span>
-          <strong>{team.score}</strong>
-          <small>점</small>
+        <div className="result-score-grid">
+          <div className="result-score">
+            <span>{character?.emoji}</span>
+            <small>우리 모둠 점수</small>
+            <strong>{team.score ?? currentTeamScore}점</strong>
+          </div>
+          <div className="result-score personal">
+            <span>🔎</span>
+            <small>내 점수</small>
+            <strong>{studentScore}점</strong>
+          </div>
         </div>
         <h1>{team.name}, 사건 수고했어요!</h1>
         <div className="badges result-badges">
@@ -1942,8 +2206,14 @@ function StudentGame({
     return (
       <section className="round-shell">
         {hintPopup}
+        {scorePopupModal}
+        {musicControl}
         <StudentStageControls onPrevious={onBack} onNext={onNext} />
         <RoundHeader round="ROUND 2" title="왜 그렇게 판단했나요?" team={team} student={student} />
+        <div className="student-score-strip">
+          <span>우리 모둠 현재 점수 <strong>{currentTeamScore}점</strong></span>
+          <span>내 현재 점수 <strong>{studentScore}점</strong></span>
+        </div>
         <div className="round2-layout">
           <aside className="panel completed-text">
             <span className="step">모둠 공동 기록</span>
@@ -2014,10 +2284,17 @@ function StudentGame({
   return (
     <section className="round-shell">
       {hintPopup}
+      {musicControl}
       <StudentStageControls onPrevious={onBack} onNext={onNext} />
       <RoundHeader round="ROUND 1" title="사건의 문장을 복원하라" team={team} student={student} />
       <div className="game-layout">
         <div className="card-stage">
+          {team.lastMovedBy && (
+            <div className="live-move-status" aria-live="polite">
+              <span className="live-dot" />
+              방금 <strong>{team.lastMovedBy}</strong> 님이 문장을 옮겼어요.
+            </div>
+          )}
           <div className="instruction-row">
             <p><strong>문장을 드래그</strong>해서 올바른 순서로 배열하세요.</p>
             <span><Users size={18} /> 모둠원과 실시간 공유 중</span>
