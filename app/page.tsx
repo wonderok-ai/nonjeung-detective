@@ -61,7 +61,6 @@ import {
   getBadges,
   parseTeamText,
   reasonOptions,
-  scoreExplanation,
   shuffle,
 } from "@/lib/game";
 import {
@@ -1108,14 +1107,19 @@ export default function Home() {
           if (!classSnapshot.exists()) throw new Error("수업 정보를 찾을 수 없습니다.");
           const latestRoom = classSnapshot.data() as ClassRoom;
           const counts = { ...fallbackCounts, ...(latestRoom.teamMemberCounts ?? {}) };
-          const selectedTeamId =
-            info.teamId === "auto"
-              ? [...teamIds].sort(
-                  (a, b) => (counts[a] ?? 0) - (counts[b] ?? 0) || a.localeCompare(b),
-                )[0]
-              : info.teamId;
+          const availableTeamIds = teamIds.filter((id) => (counts[id] ?? 0) < 5);
+          const selectedTeamId = info.teamId === "auto"
+            ? [...availableTeamIds].sort(
+                (a, b) => (counts[a] ?? 0) - (counts[b] ?? 0) || a.localeCompare(b),
+              )[0]
+            : info.teamId;
           if (!selectedTeamId || !teamIds.includes(selectedTeamId)) {
-            throw new Error("이 수업에는 선택한 모둠이 없습니다.");
+            throw new Error("현재 모든 모둠의 인원이 가득 찼습니다. 교사에게 알려 주세요.");
+          }
+          if (info.teamId !== "auto" && (counts[selectedTeamId] ?? 0) >= 5) {
+            throw new Error(
+              "현재 이 모둠은 인원이 많습니다. 다른 모둠을 선택하거나 자동 배정을 이용해 주세요.",
+            );
           }
 
           const nextCounts = {
@@ -1145,7 +1149,7 @@ export default function Home() {
         const localCounts = Object.fromEntries(
           teamIds.map((id) => [id, members.filter((member) => member.teamId === id).length]),
         );
-        teamId = [...teamIds].sort(
+        teamId = [...teamIds].filter((id) => (localCounts[id] ?? 0) < 5).sort(
           (a, b) => (localCounts[a] ?? 0) - (localCounts[b] ?? 0) || a.localeCompare(b),
         )[0];
       }
@@ -1153,6 +1157,15 @@ export default function Home() {
       if (!teamId) throw new Error("입장할 모둠을 선택해 주세요.");
       if (!activeTeams.some((team) => team.id === teamId)) {
         throw new Error("이 수업에는 선택한 모둠이 없습니다. 자동 배정을 선택해주세요.");
+      }
+      if (
+        !firebaseEnabled &&
+        info.teamId !== "auto" &&
+        members.filter((member) => member.teamId === teamId).length >= 5
+      ) {
+        throw new Error(
+          "현재 이 모둠은 인원이 많습니다. 다른 모둠을 선택하거나 자동 배정을 이용해 주세요.",
+        );
       }
 
       const member: Member = { ...memberBase, teamId };
@@ -1690,6 +1703,14 @@ function TeacherDashboard({
               const report = teamReports.find((item) => item.studentId === member.id);
               return !report || report.explanation.trim().length < 10;
             }).length;
+            const reasonCorrectCount = Math.max(0, teamMembers.length - reasonErrorCount);
+            const round2ReasonResult = teamMembers.length === 0
+              ? "미제출"
+              : reasonErrorCount === 0
+                ? "모두 정답"
+                : reasonCorrectCount === 0
+                  ? "전체 오답"
+                  : `일부 오답 (${reasonCorrectCount}/${teamMembers.length}명 정답)`;
             const summaryParts: string[] = [];
             if (!sentenceOrderCorrect) {
               const conclusion = team.originalSentences.at(-1);
@@ -1785,164 +1806,137 @@ function TeacherDashboard({
 
                 {isExpanded && (
                   <div className="team-card-detail">
-                    <div className="member-row">
-                      {teamMembers.length ? (
-                        teamMembers.map((member) => {
-                          const character = characters.find((item) => item.id === member.characterId);
-                          const memberReport = teamReports.find(
-                            (report) => report.studentId === member.id,
-                          );
-                          const memberScore = calculateStudentScore(
-                            team,
-                            memberReport,
-                            room.durationMinutes,
-                            room.startedAt,
-                          );
-                          return (
-                            <span title={member.name} key={member.id}>
-                              {character?.emoji} {member.name}
-                              <small>
-                                {member.round1SubmittedAt ? "R1 제출" : "R1 대기"} ·{" "}
-                                {member.moveCount ?? 0}회 · {memberScore}점
-                              </small>
-                            </span>
-                          );
-                        })
-                      ) : (
-                        <small>아직 입장한 학생이 없습니다.</small>
-                      )}
-                    </div>
-                    <div className="mini-order">
-                      {finalOrder.map((sentence, index) => (
-                        <p
-                          key={`${sentence}-${index}`}
-                          className={
-                            team.round1SubmittedAt && sentence === team.originalSentences[index]
-                              ? "correct"
-                              : ""
-                          }
-                        >
-                          <b>{index + 1}</b> {sentence}
-                        </p>
-                      ))}
-                    </div>
-                    <div className="team-meta">
-                      <span>논증 선택: <strong>{finalSelectedType ?? "미선택"}</strong></span>
-                      <span>개인 설명: <strong>{teamReports.length}명</strong></span>
-                    </div>
-                    {room.phase === "finished" && (
+                    {room.phase === "finished" ? (
                       <section className="answer-analysis" aria-label={`${team.name} 오답 분석`}>
+                        <div className="result-overview-grid">
+                          <div><span>모둠 점수</span><strong>{currentScore ?? 0}점</strong></div>
+                          <div>
+                            <span>문장 배열</span>
+                            <strong className={sentenceOrderCorrect ? "analysis-correct" : "analysis-wrong"}>
+                              {sentenceOrderCorrect ? "정답" : "오답"}
+                            </strong>
+                          </div>
+                          <div>
+                            <span>논증 방법</span>
+                            <strong className={argumentTypeCorrect ? "analysis-correct" : "analysis-wrong"}>
+                              {argumentTypeCorrect ? "정답" : "오답"}
+                            </strong>
+                            <small>선택 {finalSelectedType ?? "미선택"} · 정답 {team.correctType}</small>
+                          </div>
+                          <div>
+                            <span>ROUND 2 이유 선택</span>
+                            <strong className={reasonErrorCount === 0 ? "analysis-correct" : "analysis-wrong"}>
+                              {round2ReasonResult}
+                            </strong>
+                          </div>
+                        </div>
+
                         <div className={`analysis-summary ${summaryParts.length ? "has-errors" : "all-correct"}`}>
                           <strong>오답 요약</strong>
                           <p>{analysisSummary}</p>
                         </div>
 
-                        <div className="analysis-block sentence-analysis">
-                          <h4>① 문장 배열 결과</h4>
-                          <p className={sentenceOrderCorrect ? "analysis-correct" : "analysis-wrong"}>
-                            {sentenceOrderCorrect ? "문장 배열 정답" : "문장 배열 오답"}
-                          </p>
-                          <div className="sentence-analysis-list">
-                            {sentenceResults.map((item) => (
-                              <div className={item.correct ? "correct" : "wrong"} key={item.position}>
-                                <strong>{item.position}번 위치: {item.correct ? "정답" : "오답"}</strong>
-                                <span>학생 배열: {item.studentSentence}</span>
-                                <span>정답 배열: {item.correctSentence}</span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-
-                        <div className="analysis-block method-analysis">
-                          <h4>② 논증 방법 선택 결과</h4>
-                          <div>
-                            <span>모둠 선택 <strong>{finalSelectedType ?? "미선택"}</strong></span>
-                            <span>정답 <strong>{team.correctType}</strong></span>
-                            <span>결과 <strong className={argumentTypeCorrect ? "analysis-correct" : "analysis-wrong"}>
-                              {argumentTypeCorrect ? "정답" : "오답"}
-                            </strong></span>
-                          </div>
-                        </div>
-
-                        <div className="analysis-block student-analysis">
-                          <h4>③ ROUND 2 이유와 ④ 짧은 설명</h4>
-                          <div className="student-analysis-list">
+                        <div className="analysis-block explanation-summary">
+                          <h4>학생별 ROUND 2 서술형 설명</h4>
+                          <div className="explanation-summary-list">
                             {teamMembers.length ? teamMembers.map((member) => {
-                              const report = teamReports.find((item) => item.studentId === member.id);
-                              const correctChoice = correctReason[team.correctType];
-                              const reasonCorrect = report?.reasonChoice === correctChoice;
-                              const explanation = report?.explanation.trim() ?? "";
+                              const explanation = teamReports
+                                .find((item) => item.studentId === member.id)
+                                ?.explanation.trim() ?? "";
                               return (
-                                <article key={member.id}>
-                                  <h5>{member.name}</h5>
-                                  <p><span>선택</span>{report ? reasonOptions[report.reasonChoice] : "미제출"}</p>
-                                  <p><span>정답</span>{reasonOptions[correctChoice]}</p>
-                                  <p>
-                                    <span>결과</span>
-                                    <strong className={reasonCorrect ? "analysis-correct" : "analysis-wrong"}>
-                                      {reasonCorrect ? "정답" : "오답"}
-                                    </strong>
-                                  </p>
-                                  <p className="student-explanation">
-                                    <span>설명</span>{explanation.length >= 10 ? explanation : "설명 부족"}
-                                  </p>
-                                </article>
+                                <p key={member.id}>
+                                  <strong>{member.name}</strong>
+                                  <span>{explanation.length >= 10 ? explanation : "설명 부족"}</span>
+                                </p>
                               );
                             }) : <p>입장 학생이 없습니다.</p>}
                           </div>
                         </div>
-                      </section>
-                    )}
-                    {team.hintRequested && !team.hintSent && (
-                      <div className="hint-box">
-                        <label>
-                          <Lightbulb /> 힌트 요청 도착
-                          <input
-                            placeholder="이 모둠에 보낼 힌트"
-                            value={hintTexts[team.id] ?? ""}
-                            onChange={(e) =>
-                              setHintTexts((current) => ({ ...current, [team.id]: e.target.value }))
-                            }
-                          />
-                        </label>
-                        <button
-                          onClick={() => {
-                            const hint = hintTexts[team.id]?.trim();
-                            if (hint) onHint(team.id, hint);
-                          }}
-                        >
-                          보내기
-                        </button>
-                      </div>
-                    )}
-                    {team.hintSent && <p className="sent-hint">보낸 힌트: {team.hintSent}</p>}
-                    {room.phase === "finished" && (
-                      <div className="badges">
-                        {getBadges(team, teamReports, teamMembers.length).map((badge) => (
-                          <span key={badge}>🏅 {badge}</span>
-                        ))}
-                      </div>
-                    )}
-                    {teamReports.length > 0 && (
-                      <div className="report-list">
-                        {teamReports.map((report) => (
-                          <div key={report.studentId}>
-                            <strong>
-                              {report.studentName} · {report.reasonChoice}
-                              <b>설명 {scoreExplanation(team, report)}/10점</b>
-                              <b>
-                                개인 {calculateStudentScore(
-                                  team,
-                                  report,
-                                  room.durationMinutes,
-                                  room.startedAt,
-                                )}점
-                              </b>
-                            </strong>
-                            <p>{report.explanation}</p>
+
+                        <details className="analysis-details">
+                          <summary>자세히 보기</summary>
+                          <div className="analysis-block sentence-analysis">
+                            <h4>위치별 문장 배열</h4>
+                            <div className="sentence-analysis-list">
+                              {sentenceResults.map((item) => (
+                                <div className={item.correct ? "correct" : "wrong"} key={item.position}>
+                                  <strong>{item.position}번 위치: {item.correct ? "정답" : "오답"}</strong>
+                                  <span>학생 배열: {item.studentSentence}</span>
+                                  <span>정답 배열: {item.correctSentence}</span>
+                                </div>
+                              ))}
+                            </div>
                           </div>
-                        ))}
-                      </div>
+
+                          <div className="analysis-block student-choice-details">
+                            <h4>학생별 ROUND 2 객관식 선택</h4>
+                            {teamMembers.map((member) => {
+                              const report = teamReports.find((item) => item.studentId === member.id);
+                              const correctChoice = correctReason[team.correctType];
+                              const reasonCorrect = report?.reasonChoice === correctChoice;
+                              return (
+                                <p key={member.id}>
+                                  <strong>{member.name}</strong>
+                                  <span>{report ? reasonOptions[report.reasonChoice] : "미제출"}</span>
+                                  <b className={reasonCorrect ? "analysis-correct" : "analysis-wrong"}>
+                                    {reasonCorrect ? "정답" : "오답"}
+                                  </b>
+                                </p>
+                              );
+                            })}
+                          </div>
+                        </details>
+                      </section>
+                    ) : (
+                      <>
+                        <div className="member-row">
+                          {teamMembers.length ? teamMembers.map((member) => {
+                            const character = characters.find((item) => item.id === member.characterId);
+                            const memberReport = teamReports.find((report) => report.studentId === member.id);
+                            const memberScore = calculateStudentScore(
+                              team,
+                              memberReport,
+                              room.durationMinutes,
+                              room.startedAt,
+                            );
+                            return (
+                              <span title={member.name} key={member.id}>
+                                {character?.emoji} {member.name}
+                                <small>
+                                  {member.round1SubmittedAt ? "R1 제출" : "R1 대기"} ·{" "}
+                                  {member.moveCount ?? 0}회 · {memberScore}점
+                                </small>
+                              </span>
+                            );
+                          }) : <small>아직 입장한 학생이 없습니다.</small>}
+                        </div>
+                        <div className="mini-order">
+                          {finalOrder.map((sentence, index) => (
+                            <p key={`${sentence}-${index}`}><b>{index + 1}</b> {sentence}</p>
+                          ))}
+                        </div>
+                        <div className="team-meta">
+                          <span>논증 선택: <strong>{finalSelectedType ?? "미선택"}</strong></span>
+                          <span>개인 설명: <strong>{teamReports.length}명</strong></span>
+                        </div>
+                        {team.hintRequested && !team.hintSent && (
+                          <div className="hint-box">
+                            <label>
+                              <Lightbulb /> 힌트 요청 도착
+                              <input
+                                placeholder="이 모둠에 보낼 힌트"
+                                value={hintTexts[team.id] ?? ""}
+                                onChange={(e) => setHintTexts((current) => ({ ...current, [team.id]: e.target.value }))}
+                              />
+                            </label>
+                            <button onClick={() => {
+                              const hint = hintTexts[team.id]?.trim();
+                              if (hint) onHint(team.id, hint);
+                            }}>보내기</button>
+                          </div>
+                        )}
+                        {team.hintSent && <p className="sent-hint">보낸 힌트: {team.hintSent}</p>}
+                      </>
                     )}
                   </div>
                 )}
@@ -2244,6 +2238,7 @@ function StudentGame({
   const draftKey = `argument-detectives:report-draft:${room.id}:${student.id}`;
   const seenHintKey = `argument-detectives:seen-hint:${room.id}:${student.id}`;
   const winnerSeenKey = `argument-detectives:winner-seen:student:${room.id}:${student.id}`;
+  const bgmPreferenceKey = `argument-detectives:bgm-enabled:${student.id}`;
   const winners = getWinningTeams(teams);
   const round1ReadOnly = room.phase !== "round1";
   const studentRound1Submitted = Boolean(student.round1SubmittedAt);
@@ -2322,6 +2317,13 @@ function StudentGame({
     return stopBgmLoop;
   }, [bgmEnabled, displayPhase]);
 
+  useEffect(() => {
+    if (localStorage.getItem(bgmPreferenceKey) !== "true") return;
+    const resumePreferredBgm = () => void enableBgm();
+    window.addEventListener("pointerdown", resumePreferredBgm, { once: true, capture: true });
+    return () => window.removeEventListener("pointerdown", resumePreferredBgm, { capture: true });
+  }, [bgmPreferenceKey]);
+
   useEffect(
     () => () => {
       stopBgmLoop();
@@ -2383,12 +2385,11 @@ function StudentGame({
     stopBgmLoop();
     if (phase === "finished" || typeof window === "undefined") return;
 
-    if (!bgmContextRef.current) bgmContextRef.current = new window.AudioContext();
     const context = bgmContextRef.current;
-    if (context.state === "suspended") void context.resume();
+    if (!context || context.state !== "running") return;
 
     const master = context.createGain();
-    master.gain.setValueAtTime(0.009, context.currentTime);
+    master.gain.setValueAtTime(0.028, context.currentTime);
     master.connect(context.destination);
     bgmMasterRef.current = master;
 
@@ -2423,14 +2424,24 @@ function StudentGame({
     bgmTimerRef.current = setInterval(playPhrase, phraseDuration * 1000);
   }
 
+  async function enableBgm() {
+    if (!bgmContextRef.current) bgmContextRef.current = new window.AudioContext();
+    const context = bgmContextRef.current;
+    if (context.state === "suspended") await context.resume();
+    if (context.state === "running") {
+      localStorage.setItem(bgmPreferenceKey, "true");
+      setBgmEnabled(true);
+    }
+  }
+
   function toggleBgm() {
-    if (bgmEnabled) {
-      setBgmEnabled(false);
+    if (!bgmEnabled) {
+      void enableBgm();
       return;
     }
-    if (!bgmContextRef.current) bgmContextRef.current = new window.AudioContext();
-    if (bgmContextRef.current.state === "suspended") void bgmContextRef.current.resume();
-    setBgmEnabled(true);
+    localStorage.setItem(bgmPreferenceKey, "false");
+    setBgmEnabled(false);
+    stopBgmLoop();
   }
 
   function dragEnd(event: DragEndEvent) {
