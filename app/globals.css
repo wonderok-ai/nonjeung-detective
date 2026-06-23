@@ -349,6 +349,40 @@ code { color: var(--gold); }
   color: #172033; background: var(--gold); font-size: 11px;
 }
 .report-list p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+.answer-analysis { margin-top: 18px; display: grid; gap: 12px; }
+.analysis-summary, .analysis-block {
+  padding: 15px; border: 1px solid var(--line); border-radius: 13px; background: #10192a;
+}
+.analysis-summary strong, .analysis-block h4 { color: var(--gold); }
+.analysis-summary p { margin: 7px 0 0; color: #dbe6f6; font-size: 13px; line-height: 1.65; }
+.analysis-summary.has-errors { border-color: rgba(248,113,113,.4); background: rgba(127,29,29,.13); }
+.analysis-summary.all-correct { border-color: rgba(74,222,128,.42); background: rgba(22,101,52,.15); }
+.analysis-block h4 { margin: 0 0 11px; font-size: 14px; }
+.analysis-block > p { margin: 0 0 10px; font-size: 13px; font-weight: 800; }
+.analysis-correct { color: #86efac !important; }
+.analysis-wrong { color: #fca5a5 !important; }
+.sentence-analysis-list, .student-analysis-list { display: grid; gap: 8px; }
+.sentence-analysis-list > div {
+  padding: 10px; border-left: 3px solid #4ade80; border-radius: 9px; background: #172238;
+  display: grid; gap: 4px;
+}
+.sentence-analysis-list > div.wrong { border-left-color: #f87171; }
+.sentence-analysis-list strong { color: #dbe6f6; font-size: 12px; }
+.sentence-analysis-list span { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.method-analysis > div { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.method-analysis span {
+  padding: 9px; border-radius: 9px; background: #172238;
+  display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 11px;
+}
+.method-analysis span strong { color: var(--ink); font-size: 13px; }
+.student-analysis-list article { padding: 12px; border-radius: 10px; background: #172238; }
+.student-analysis-list h5 { margin: 0 0 9px; color: var(--mint); font-size: 14px; }
+.student-analysis-list p {
+  margin: 5px 0; display: grid; grid-template-columns: 48px 1fr; gap: 8px;
+  color: #dbe6f6; font-size: 12px; line-height: 1.55;
+}
+.student-analysis-list p span { color: var(--muted); font-weight: 800; }
+.student-analysis-list .student-explanation { margin-top: 9px; padding-top: 9px; border-top: 1px solid var(--line); }
 
 .join-shell { max-width: 900px; margin: auto; padding: 45px 28px 80px; }
 .join-panel { padding: 30px; }
@@ -534,6 +568,7 @@ legend { font-weight: 800; margin-bottom: 14px; }
   .character-grid { grid-template-columns: repeat(3, 1fr); }
   .join-fields { grid-template-columns: 1fr; }
   .summary-strip { grid-template-columns: repeat(2, 1fr); }
+  .method-analysis > div { grid-template-columns: 1fr; }
   .dashboard-head, .round-header { align-items: flex-start; flex-direction: column; }
 }
 

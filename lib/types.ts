@@ -26,6 +26,7 @@ export interface ClassRoom {
   startedAt: number | null;
   createdAt: number;
   teacherId?: string;
+  teamMemberCounts?: Record<string, number>;
 }
 
 export interface Team {

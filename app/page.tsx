@@ -164,6 +164,10 @@ type AppScreen =
 const teacherSessionKey = "argument-detectives:teacher";
 const studentSessionKey = "argument-detectives:student";
 
+function createTeamMemberCounts(teamIds: string[]) {
+  return Object.fromEntries(teamIds.map((teamId) => [teamId, 0]));
+}
+
 interface BgmPattern {
   notes: number[];
   spacing: number;
@@ -869,6 +873,7 @@ export default function Home() {
           phase: "lobby",
           startedAt: null,
           createdAt: Date.now(),
+          teamMemberCounts: createTeamMemberCounts(localTeams.map((team) => team.id)),
         });
         setTeams(localTeams);
         navigate("teacher-dashboard");
@@ -908,6 +913,9 @@ export default function Home() {
         startedAt: null,
         createdAt: Date.now(),
         teacherId: teacherUser.uid,
+        teamMemberCounts: createTeamMemberCounts(
+          parsed.map((item) => `team-${item.number}`),
+        ),
       });
       const batch = writeBatch(firestore);
       parsed.forEach((item) => {
@@ -936,6 +944,9 @@ export default function Home() {
         startedAt: null,
         createdAt: Date.now(),
         teacherId: teacherUser.uid,
+        teamMemberCounts: createTeamMemberCounts(
+          parsed.map((item) => `team-${item.number}`),
+        ),
       });
       localStorage.setItem(teacherSessionKey, JSON.stringify({ roomId: roomRef.id }));
       localStorage.removeItem(studentSessionKey);
@@ -1065,59 +1076,88 @@ export default function Home() {
         }
       }
 
+      const user = firebaseEnabled ? await ensureAnonymousUser() : null;
+      const joinedAt = Date.now();
+      const memberBase = {
+        id: user?.uid ?? `demo-${Date.now()}`,
+        name: info.name,
+        characterId: info.characterId,
+        joinedAt,
+        online: true,
+        round1SubmittedAt: null,
+        moveCount: 0,
+      };
+      const teamIds = activeTeams.map((team) => team.id).sort();
       let teamId = info.teamId;
-      if (teamId === "auto") {
-        const memberCounts = await Promise.all(
-          activeTeams.map(async (team) => {
-            if (!firebaseEnabled || activeRoom?.id === "demo") {
-              return members.filter((member) => member.teamId === team.id).length;
-            }
-            const memberDocs = await getDocs(refs.members(activeRoom!.id, team.id));
-            return memberDocs.size;
-          }),
+
+      if (firebaseEnabled && activeRoom.id !== "demo" && db) {
+        const fallbackCounts = activeRoom.teamMemberCounts
+          ? activeRoom.teamMemberCounts
+          : Object.fromEntries(
+              await Promise.all(
+                teamIds.map(async (id) => [
+                  id,
+                  (await getDocs(refs.members(activeRoom!.id, id))).size,
+                ]),
+              ),
+            );
+
+        teamId = await runTransaction(db, async (transaction) => {
+          const classRef = refs.class(activeRoom!.id);
+          const classSnapshot = await transaction.get(classRef);
+          if (!classSnapshot.exists()) throw new Error("수업 정보를 찾을 수 없습니다.");
+          const latestRoom = classSnapshot.data() as ClassRoom;
+          const counts = { ...fallbackCounts, ...(latestRoom.teamMemberCounts ?? {}) };
+          const selectedTeamId =
+            info.teamId === "auto"
+              ? [...teamIds].sort(
+                  (a, b) => (counts[a] ?? 0) - (counts[b] ?? 0) || a.localeCompare(b),
+                )[0]
+              : info.teamId;
+          if (!selectedTeamId || !teamIds.includes(selectedTeamId)) {
+            throw new Error("이 수업에는 선택한 모둠이 없습니다.");
+          }
+
+          const nextCounts = {
+            ...counts,
+            [selectedTeamId]: (counts[selectedTeamId] ?? 0) + 1,
+          };
+          transaction.update(classRef, { teamMemberCounts: nextCounts });
+          transaction.set(refs.member(activeRoom!.id, selectedTeamId, memberBase.id), {
+            name: memberBase.name,
+            characterId: memberBase.characterId,
+            teamId: selectedTeamId,
+            joinedAt,
+            online: true,
+            round1SubmittedAt: null,
+            moveCount: 0,
+          });
+          if (latestRoom.phase === "round1") {
+            transaction.update(refs.team(activeRoom!.id, selectedTeamId), {
+              round1SubmittedAt: null,
+              finalOrder: null,
+              finalSelectedType: null,
+            });
+          }
+          return selectedTeamId;
+        }, { maxAttempts: 30 });
+      } else if (teamId === "auto") {
+        const localCounts = Object.fromEntries(
+          teamIds.map((id) => [id, members.filter((member) => member.teamId === id).length]),
         );
-        teamId = [...activeTeams].sort(
-          (a, b) =>
-            memberCounts[activeTeams.findIndex((team) => team.id === a.id)] -
-            memberCounts[activeTeams.findIndex((team) => team.id === b.id)],
-        )[0]?.id;
+        teamId = [...teamIds].sort(
+          (a, b) => (localCounts[a] ?? 0) - (localCounts[b] ?? 0) || a.localeCompare(b),
+        )[0];
       }
+
       if (!teamId) throw new Error("입장할 모둠을 선택해 주세요.");
       if (!activeTeams.some((team) => team.id === teamId)) {
         throw new Error("이 수업에는 선택한 모둠이 없습니다. 자동 배정을 선택해주세요.");
       }
 
-      const user = firebaseEnabled ? await ensureAnonymousUser() : null;
-      const member: Member = {
-        id: user?.uid ?? `demo-${Date.now()}`,
-        name: info.name,
-        characterId: info.characterId,
-        teamId,
-        joinedAt: Date.now(),
-        online: true,
-        round1SubmittedAt: null,
-        moveCount: 0,
-      };
+      const member: Member = { ...memberBase, teamId };
       setStudent(member);
       setMembers((current) => [...current, member]);
-      if (firebaseEnabled && activeRoom.id !== "demo") {
-        await setDoc(refs.member(activeRoom.id, teamId, member.id), {
-          name: member.name,
-          characterId: member.characterId,
-          teamId,
-          joinedAt: Date.now(),
-          online: true,
-          round1SubmittedAt: null,
-          moveCount: 0,
-        });
-        if (activeRoom.phase === "round1") {
-          await updateDoc(refs.team(activeRoom.id, teamId), {
-            round1SubmittedAt: null,
-            finalOrder: null,
-            finalSelectedType: null,
-          });
-        }
-      }
       setStudentJoinCode(normalizedCode);
       localStorage.setItem(
         studentSessionKey,
@@ -1632,6 +1672,48 @@ function TeacherDashboard({
             );
             const isRound1Complete = Boolean(team.round1SubmittedAt);
             const isExpanded = selectedTeamId === team.id;
+            const finalOrder = getFinalOrder(team);
+            const finalSelectedType = getFinalSelectedType(team);
+            const sentenceResults = team.originalSentences.map((correctSentence, index) => ({
+              position: index + 1,
+              studentSentence: finalOrder[index] ?? "문장 없음",
+              correctSentence,
+              correct: finalOrder[index] === correctSentence,
+            }));
+            const sentenceOrderCorrect = sentenceResults.every((item) => item.correct);
+            const argumentTypeCorrect = finalSelectedType === team.correctType;
+            const reasonErrorCount = teamMembers.filter((member) => {
+              const report = teamReports.find((item) => item.studentId === member.id);
+              return !report || report.reasonChoice !== correctReason[team.correctType];
+            }).length;
+            const insufficientExplanationCount = teamMembers.filter((member) => {
+              const report = teamReports.find((item) => item.studentId === member.id);
+              return !report || report.explanation.trim().length < 10;
+            }).length;
+            const summaryParts: string[] = [];
+            if (!sentenceOrderCorrect) {
+              const conclusion = team.originalSentences.at(-1);
+              const conclusionPosition = conclusion ? finalOrder.indexOf(conclusion) : -1;
+              summaryParts.push(
+                conclusionPosition >= 0 && conclusionPosition < finalOrder.length - 1
+                  ? "결론 문장을 앞쪽에 배치했습니다."
+                  : "문장 배열 순서를 다시 확인해야 합니다.",
+              );
+            }
+            if (!argumentTypeCorrect) {
+              summaryParts.push(
+                `${finalSelectedType ?? "미선택"}과 ${team.correctType}을(를) 구분해 볼 필요가 있습니다.`,
+              );
+            }
+            if (reasonErrorCount > 0) {
+              summaryParts.push(`ROUND 2 이유 선택 오답 또는 미제출이 ${reasonErrorCount}명 있습니다.`);
+            }
+            if (insufficientExplanationCount > 0) {
+              summaryParts.push(`설명 부족 또는 미제출이 ${insufficientExplanationCount}명 있습니다.`);
+            }
+            const analysisSummary = summaryParts.length
+              ? summaryParts.join(" ")
+              : "모든 항목을 잘 해결했습니다.";
             const currentScore =
               room.phase === "finished"
                 ? team.score
@@ -1731,7 +1813,7 @@ function TeacherDashboard({
                       )}
                     </div>
                     <div className="mini-order">
-                      {getFinalOrder(team).map((sentence, index) => (
+                      {finalOrder.map((sentence, index) => (
                         <p
                           key={`${sentence}-${index}`}
                           className={
@@ -1745,9 +1827,72 @@ function TeacherDashboard({
                       ))}
                     </div>
                     <div className="team-meta">
-                      <span>논증 선택: <strong>{getFinalSelectedType(team) ?? "미선택"}</strong></span>
+                      <span>논증 선택: <strong>{finalSelectedType ?? "미선택"}</strong></span>
                       <span>개인 설명: <strong>{teamReports.length}명</strong></span>
                     </div>
+                    {room.phase === "finished" && (
+                      <section className="answer-analysis" aria-label={`${team.name} 오답 분석`}>
+                        <div className={`analysis-summary ${summaryParts.length ? "has-errors" : "all-correct"}`}>
+                          <strong>오답 요약</strong>
+                          <p>{analysisSummary}</p>
+                        </div>
+
+                        <div className="analysis-block sentence-analysis">
+                          <h4>① 문장 배열 결과</h4>
+                          <p className={sentenceOrderCorrect ? "analysis-correct" : "analysis-wrong"}>
+                            {sentenceOrderCorrect ? "문장 배열 정답" : "문장 배열 오답"}
+                          </p>
+                          <div className="sentence-analysis-list">
+                            {sentenceResults.map((item) => (
+                              <div className={item.correct ? "correct" : "wrong"} key={item.position}>
+                                <strong>{item.position}번 위치: {item.correct ? "정답" : "오답"}</strong>
+                                <span>학생 배열: {item.studentSentence}</span>
+                                <span>정답 배열: {item.correctSentence}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="analysis-block method-analysis">
+                          <h4>② 논증 방법 선택 결과</h4>
+                          <div>
+                            <span>모둠 선택 <strong>{finalSelectedType ?? "미선택"}</strong></span>
+                            <span>정답 <strong>{team.correctType}</strong></span>
+                            <span>결과 <strong className={argumentTypeCorrect ? "analysis-correct" : "analysis-wrong"}>
+                              {argumentTypeCorrect ? "정답" : "오답"}
+                            </strong></span>
+                          </div>
+                        </div>
+
+                        <div className="analysis-block student-analysis">
+                          <h4>③ ROUND 2 이유와 ④ 짧은 설명</h4>
+                          <div className="student-analysis-list">
+                            {teamMembers.length ? teamMembers.map((member) => {
+                              const report = teamReports.find((item) => item.studentId === member.id);
+                              const correctChoice = correctReason[team.correctType];
+                              const reasonCorrect = report?.reasonChoice === correctChoice;
+                              const explanation = report?.explanation.trim() ?? "";
+                              return (
+                                <article key={member.id}>
+                                  <h5>{member.name}</h5>
+                                  <p><span>선택</span>{report ? reasonOptions[report.reasonChoice] : "미제출"}</p>
+                                  <p><span>정답</span>{reasonOptions[correctChoice]}</p>
+                                  <p>
+                                    <span>결과</span>
+                                    <strong className={reasonCorrect ? "analysis-correct" : "analysis-wrong"}>
+                                      {reasonCorrect ? "정답" : "오답"}
+                                    </strong>
+                                  </p>
+                                  <p className="student-explanation">
+                                    <span>설명</span>{explanation.length >= 10 ? explanation : "설명 부족"}
+                                  </p>
+                                </article>
+                              );
+                            }) : <p>입장 학생이 없습니다.</p>}
+                          </div>
+                        </div>
+                      </section>
+                    )}
                     {team.hintRequested && !team.hintSent && (
                       <div className="hint-box">
                         <label>
