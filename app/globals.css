@@ -28,6 +28,21 @@ body {
 button, input, textarea, select { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: 0.55; }
+.app-layout {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+.app-footer {
+  margin-top: auto;
+  padding: 34px 24px 24px;
+  text-align: center;
+  color: rgba(169, 175, 189, 0.72);
+  font-size: 12px;
+  line-height: 1.4;
+  letter-spacing: 0.01em;
+  border-top: 1px solid rgba(255, 255, 255, 0.045);
+}
 .back-button {
   border: 1px solid var(--line); border-radius: 10px; padding: 9px 13px; margin-bottom: 18px;
   color: var(--muted); background: rgba(22,32,52,.72); font-weight: 700;

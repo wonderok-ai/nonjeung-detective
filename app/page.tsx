@@ -1220,17 +1220,18 @@ export default function Home() {
 
   if (restoring) {
     return (
-      <main>
+      <main className="app-layout">
         <section className="waiting-room">
           <span className="eyebrow">논증 탐정단</span>
           <h1>수사 기록을 불러오는 중...</h1>
         </section>
+        <DeveloperFooter />
       </main>
     );
   }
 
   return (
-    <main>
+    <main className="app-layout">
       <header className="topbar">
         <button className="brand" onClick={() => navigate("home")}>
           <span className="brand-mark">?</span>
@@ -1329,7 +1330,16 @@ export default function Home() {
           }}
         />
       )}
+      <DeveloperFooter />
     </main>
+  );
+}
+
+function DeveloperFooter() {
+  return (
+    <footer className="app-footer" aria-label="제작자 정보">
+      Developed by wonderok&nbsp;&nbsp; © 2026 wonderok Lab
+    </footer>
   );
 }
 
